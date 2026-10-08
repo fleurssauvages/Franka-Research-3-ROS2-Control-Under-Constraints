@@ -47,12 +47,14 @@ LmpcPositionNode::LmpcPositionNode() : Node("lmpc_position_controller") {
   robot_type_ = declare_parameter<std::string>("robot_type", "fr3");
   arm_prefix_ = declare_parameter<std::string>("arm_prefix", "");
   root_link_ = declare_parameter<std::string>("root_link", "");
-  tip_link_ = declare_parameter<std::string>("tip_link", "");
+  tip_link_ = declare_parameter<std::string>("tip_link", "auto");
+  declare_parameter<bool>("load_gripper", false);  // Bringup compatibility; URDF decides the tip.
   joint_names_ = declare_parameter<std::vector<std::string>>(
       "joint_names", deriveJointNames(robot_type_, arm_prefix_));
   if (joint_names_.size() != 7) throw std::runtime_error("joint_names must contain 7 entries");
   if (root_link_.empty()) root_link_ = deriveRootLink(robot_type_, arm_prefix_);
-  tip_link_ = deriveTipLink(robot_type_, arm_prefix_, tip_link_);
+  // tip_link=auto is resolved from the received /robot_description.
+  RCLCPP_INFO(get_logger(), "URDF_TIP_AUTO_V7: requested tip_link=\"%s\"", tip_link_.c_str());
 
   frequency_ = declare_parameter<double>("frequency", 50.0);
   command_timeout_ = declare_parameter<double>("command_timeout", 0.50);
@@ -102,7 +104,7 @@ LmpcPositionNode::LmpcPositionNode() : Node("lmpc_position_controller") {
   }
 
   obstacle_avoidance_enabled_ = declare_parameter<bool>("obstacles.enabled", true);
-  obstacle_safety_distance_ = declare_parameter<double>("obstacles.safety_distance", 0.05);
+  obstacle_safety_distance_ = declare_parameter<double>("obstacles.safety_distance", 0.01);
   obstacle_influence_distance_ = declare_parameter<double>("obstacles.influence_distance", 0.15);
   obstacle_barrier_gain_ = declare_parameter<double>("obstacles.barrier_gain", 3.0);
   obstacle_max_active_meshes_ = declare_parameter<int>("obstacles.max_active_meshes", 16);
@@ -159,7 +161,8 @@ LmpcPositionNode::LmpcPositionNode() : Node("lmpc_position_controller") {
 
   RCLCPP_INFO(get_logger(),
               "LMPC first-order velocity model: %s -> %s at %.1f Hz, horizon=%d, tau=%.3f s, twist_regularization=%.4f, delta_twist_weight=%.4f, watchdog=%.3f s, obstacle meshes=%zu",
-              root_link_.c_str(), tip_link_.c_str(), frequency_, horizon_,
+              root_link_.c_str(), (tip_link_ == "auto" ? "<auto from URDF>" : tip_link_.c_str()),
+              frequency_, horizon_,
               velocity_tracking_time_constant_, regularization_gain_,
               delta_twist_weight_, command_timeout_, meshes_.size());
 }
@@ -167,12 +170,14 @@ LmpcPositionNode::LmpcPositionNode() : Node("lmpc_position_controller") {
 void LmpcPositionNode::robotDescriptionCallback(const std_msgs::msg::String::SharedPtr msg) {
   if (kinematics_ready_) return;
   std::string error;
-  if (!kinematics_.initialize(msg->data, root_link_, tip_link_, &error)) {
+  if (!kinematics_.initializeFromRobotDescriptionV7(msg->data, root_link_, tip_link_, &error)) {
     RCLCPP_ERROR_THROTTLE(get_logger(), *get_clock(), 2000, "%s", error.c_str());
     return;
   }
+  tip_link_ = kinematics_.tipLink();
   kinematics_ready_ = true;
-  RCLCPP_INFO(get_logger(), "Kinematics initialized from /robot_description");
+  RCLCPP_INFO(get_logger(), "FR3_KINEMATICS_V7: initialized from /robot_description: %s -> %s",
+              root_link_.c_str(), tip_link_.c_str());
 }
 
 void LmpcPositionNode::jointStateCallback(const sensor_msgs::msg::JointState::SharedPtr msg) {

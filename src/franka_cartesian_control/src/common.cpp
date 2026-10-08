@@ -21,12 +21,6 @@ std::string deriveRootLink(const std::string& robot_type, const std::string& arm
   return expandedPrefix(robot_type, arm_prefix) + "_link0";
 }
 
-std::string deriveTipLink(const std::string& robot_type, const std::string& arm_prefix,
-                          const std::string& requested_tip) {
-  if (!requested_tip.empty()) return requested_tip;
-  return expandedPrefix(robot_type, arm_prefix) + "_hand_tcp";
-}
-
 bool extractJointState(const sensor_msgs::msg::JointState& msg,
                        const std::vector<std::string>& joint_names,
                        Vector7d& q, Vector7d& dq) {

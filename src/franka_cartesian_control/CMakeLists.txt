@@ -53,27 +53,31 @@ endif()
 message(STATUS "qpOASES include: ${QPOASES_INCLUDE_DIR}")
 message(STATUS "qpOASES library: ${QPOASES_LIBRARY}")
 
-add_library(cartesian_control_common
+# Use a version-specific STATIC library so all four controller executables
+# embed the matching Kinematics implementation. This prevents an old shared
+# libcartesian_control_common.so in a sourced ROS 2 overlay from overriding
+# the resolver and causing ABI mismatches/segmentation faults.
+add_library(cartesian_control_common_v7 STATIC
   src/common.cpp
   src/kinematics.cpp
 )
-target_include_directories(cartesian_control_common PUBLIC
+target_include_directories(cartesian_control_common_v7 PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>
 )
-target_link_libraries(cartesian_control_common Eigen3::Eigen)
-ament_target_dependencies(cartesian_control_common
+target_link_libraries(cartesian_control_common_v7 Eigen3::Eigen)
+ament_target_dependencies(cartesian_control_common_v7
   rclcpp sensor_msgs geometry_msgs std_msgs kdl_parser orocos_kdl
 )
 
 add_executable(ik_velocity_controller src/ik_velocity_node.cpp)
-target_link_libraries(ik_velocity_controller cartesian_control_common Eigen3::Eigen)
+target_link_libraries(ik_velocity_controller cartesian_control_common_v7 Eigen3::Eigen)
 ament_target_dependencies(ik_velocity_controller rclcpp sensor_msgs geometry_msgs std_msgs)
 
 add_executable(qp_velocity_controller src/qp_velocity_node.cpp)
 target_include_directories(qp_velocity_controller PRIVATE ${QPOASES_INCLUDE_DIR})
 target_link_libraries(qp_velocity_controller
-  cartesian_control_common
+  cartesian_control_common_v7
   Eigen3::Eigen
   ${QPOASES_LIBRARY}
 )
@@ -82,13 +86,13 @@ ament_target_dependencies(qp_velocity_controller
 )
 
 add_executable(pid_position_controller src/pid_position_node.cpp)
-target_link_libraries(pid_position_controller cartesian_control_common Eigen3::Eigen)
+target_link_libraries(pid_position_controller cartesian_control_common_v7 Eigen3::Eigen)
 ament_target_dependencies(pid_position_controller rclcpp sensor_msgs geometry_msgs std_msgs)
 
 add_executable(lmpc_position_controller src/lmpc_position_node.cpp)
 target_include_directories(lmpc_position_controller PRIVATE ${QPOASES_INCLUDE_DIR})
 target_link_libraries(lmpc_position_controller
-  cartesian_control_common
+  cartesian_control_common_v7
   Eigen3::Eigen
   ${QPOASES_LIBRARY}
 )
@@ -104,7 +108,7 @@ set_target_properties(qp_velocity_controller lmpc_position_controller PROPERTIES
 )
 
 install(TARGETS
-  cartesian_control_common
+  cartesian_control_common_v7
   ik_velocity_controller
   qp_velocity_controller
   pid_position_controller
@@ -117,4 +121,8 @@ install(DIRECTORY include/ DESTINATION include)
 install(DIRECTORY launch config DESTINATION share/${PROJECT_NAME})
 
 ament_export_include_directories(include)
+install(DIRECTORY config/
+  DESTINATION share/${PROJECT_NAME}
+)
+
 ament_package()

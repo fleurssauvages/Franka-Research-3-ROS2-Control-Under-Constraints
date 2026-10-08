@@ -52,6 +52,8 @@ def _setup(context):
     joint_limit_margin = float(LaunchConfiguration("joint_limit_margin").perform(context))
     repulsion_when_idle = _as_bool(LaunchConfiguration("repulsion_when_idle").perform(context))
     idle_safety_frequency = float(LaunchConfiguration("idle_safety_frequency").perform(context))
+    load_gripper = _as_bool(LaunchConfiguration("load_gripper").perform(context))
+    requested_tip_link = LaunchConfiguration("tip_link").perform(context).strip()
     low_level_mode = LaunchConfiguration("low_level_mode").perform(context).strip().lower()
     if low_level_mode not in ("velocity", "impedance"):
         raise RuntimeError("low_level_mode must be 'velocity' or 'impedance'")
@@ -60,6 +62,7 @@ def _setup(context):
     node_parameters = {
         "robot_type": robot_type,
         "arm_prefix": arm_prefix,
+        "load_gripper": load_gripper,
         "twist_topic": twist_topic,
         "joint_state_topic": joint_state_topic,
         "joint_command_topic": joint_command_topic,
@@ -68,6 +71,10 @@ def _setup(context):
         "repulsion_when_idle": repulsion_when_idle,
         "idle_safety_frequency": idle_safety_frequency,
     }
+    # Launch value overrides any stale YAML tip. auto requests strict URDF-based
+    # auto-resolution instead of trusting load_gripper or an obsolete YAML default.
+    node_parameters["tip_link"] = requested_tip_link or "auto"
+
     # One shared set of joint motion limits is applied to both IK and QP.
     # This avoids the previous hidden behavior where QP silently kept the YAML
     # 0.3 rad/s^2 limit while launch arguments only changed IK.
@@ -122,6 +129,8 @@ def _setup(context):
                     "friction_use_recommended_enable": LaunchConfiguration("impedance_friction_use_recommended_enable").perform(context),
                     "friction_apply_torque_bias": LaunchConfiguration("impedance_friction_apply_torque_bias").perform(context),
                     "friction_compensation_scale": LaunchConfiguration("impedance_friction_compensation_scale").perform(context),
+                    "friction_stribeck_enabled": LaunchConfiguration("impedance_friction_stribeck_enabled").perform(context),
+                    "friction_max_compensation_torque": LaunchConfiguration("impedance_friction_max_compensation_torque").perform(context),
                     "configure_collision_behavior": LaunchConfiguration("configure_collision_behavior").perform(context),
                     "collision_torque_scale": LaunchConfiguration("collision_torque_scale").perform(context),
                     "collision_force_scale": LaunchConfiguration("collision_force_scale").perform(context),
@@ -205,7 +214,15 @@ def generate_launch_description():
         DeclareLaunchArgument("impedance_friction_use_recommended_enable", default_value="true"),
         DeclareLaunchArgument("impedance_friction_apply_torque_bias", default_value="false", description="Deprecated; strictly odd friction compensation never applies torque bias"),
         DeclareLaunchArgument("impedance_friction_compensation_scale", default_value="1.0"),
-        DeclareLaunchArgument("load_gripper", default_value="true"),
+        DeclareLaunchArgument("impedance_friction_stribeck_enabled", default_value="true",
+                              description="Require schema-v4 Stribeck friction calibration (false selects legacy Coulomb)"),
+        DeclareLaunchArgument("impedance_friction_max_compensation_torque",
+                              default_value="[0.75,0.75,0.75,0.75,0.75,0.75,0.75]",
+                              description="Per-joint friction feedforward caps [Nm]"),
+        DeclareLaunchArgument("load_gripper", default_value="false",
+                              description="Include Franka hand in URDF bringup; tip is resolved from /robot_description"),
+        DeclareLaunchArgument("tip_link", default_value="auto",
+                              description="auto resolves a seven-joint TCP from /robot_description; otherwise specify a URDF link"),
         DeclareLaunchArgument("use_fake_hardware", default_value="false"),
         DeclareLaunchArgument(
             "load_franka_robot_state_broadcaster", default_value="false",

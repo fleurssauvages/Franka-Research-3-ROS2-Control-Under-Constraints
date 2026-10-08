@@ -1,0 +1,12 @@
+groups:
+  low_level:
+    color: blue
+    label: ""
+    nodes:
+      - cartesian_low_level_ready
+      - position_velocity_ready
+
+defaults:
+  color_mode: tag_only
+  show_group_tag: true
+  unmatched_color: null

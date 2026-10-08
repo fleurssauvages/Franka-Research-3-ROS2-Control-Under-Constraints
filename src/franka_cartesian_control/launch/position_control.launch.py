@@ -50,6 +50,7 @@ def _setup(context):
             "start_low_level": LaunchConfiguration("start_low_level").perform(context),
             "low_level_mode": LaunchConfiguration("low_level_mode").perform(context),
             "load_gripper": LaunchConfiguration("load_gripper").perform(context),
+            "tip_link": LaunchConfiguration("tip_link").perform(context),
             "use_fake_hardware": LaunchConfiguration("use_fake_hardware").perform(context),
             "load_franka_robot_state_broadcaster": LaunchConfiguration("load_franka_robot_state_broadcaster").perform(context),
             "joint_state_rate": LaunchConfiguration("joint_state_rate").perform(context),
@@ -72,6 +73,8 @@ def _setup(context):
             "impedance_friction_use_recommended_enable": LaunchConfiguration("impedance_friction_use_recommended_enable").perform(context),
             "impedance_friction_apply_torque_bias": LaunchConfiguration("impedance_friction_apply_torque_bias").perform(context),
             "impedance_friction_compensation_scale": LaunchConfiguration("impedance_friction_compensation_scale").perform(context),
+            "impedance_friction_stribeck_enabled": LaunchConfiguration("impedance_friction_stribeck_enabled").perform(context),
+            "impedance_friction_max_compensation_torque": LaunchConfiguration("impedance_friction_max_compensation_torque").perform(context),
             "configure_collision_behavior": LaunchConfiguration("configure_collision_behavior").perform(context),
             "collision_torque_scale": LaunchConfiguration("collision_torque_scale").perform(context),
             "collision_force_scale": LaunchConfiguration("collision_force_scale").perform(context),
@@ -81,9 +84,14 @@ def _setup(context):
         }.items(),
     )
 
+    load_gripper = LaunchConfiguration("load_gripper").perform(context).strip().lower() in (
+        "1", "true", "yes", "on"
+    )
+    requested_tip_link = LaunchConfiguration("tip_link").perform(context).strip()
     controller_parameters = {
         "robot_type": LaunchConfiguration("robot_type").perform(context),
         "arm_prefix": LaunchConfiguration("arm_prefix").perform(context),
+        "load_gripper": load_gripper,
         "joint_state_topic": LaunchConfiguration("joint_state_topic").perform(context),
         "desired_pose_topic": LaunchConfiguration("desired_pose_topic").perform(context),
         "twist_topic": LaunchConfiguration("twist_topic").perform(context),
@@ -93,6 +101,8 @@ def _setup(context):
         # controller stops publishing TwistStamped commands.
         "command_timeout": float(LaunchConfiguration("pose_watchdog_timeout").perform(context)),
     }
+
+    controller_parameters["tip_link"] = requested_tip_link or "auto"  # URDF auto resolution
 
     if position_controller == "pid":
         controller_parameters.update({
@@ -255,7 +265,10 @@ def generate_launch_description():
         DeclareLaunchArgument("robot_ip", default_value="192.16.0.1"),
         DeclareLaunchArgument("start_low_level", default_value="true"),
         DeclareLaunchArgument("low_level_mode", default_value="velocity"),
-        DeclareLaunchArgument("load_gripper", default_value="true"),
+        DeclareLaunchArgument("load_gripper", default_value="false",
+                              description="Include Franka hand in URDF bringup; Cartesian tip is determined from /robot_description"),
+        DeclareLaunchArgument("tip_link", default_value="auto",
+                              description="auto resolves the 7-DOF TCP from /robot_description; otherwise specify a link name"),
         DeclareLaunchArgument("use_fake_hardware", default_value="false"),
         DeclareLaunchArgument(
             "load_franka_robot_state_broadcaster", default_value="false",
@@ -299,6 +312,11 @@ def generate_launch_description():
         DeclareLaunchArgument("impedance_friction_use_recommended_enable", default_value="true"),
         DeclareLaunchArgument("impedance_friction_apply_torque_bias", default_value="false", description="Deprecated; strictly odd friction compensation never applies torque bias"),
         DeclareLaunchArgument("impedance_friction_compensation_scale", default_value="1.0"),
+        DeclareLaunchArgument("impedance_friction_stribeck_enabled", default_value="true",
+                              description="Require schema-v4 Stribeck friction calibration (false selects legacy Coulomb)"),
+        DeclareLaunchArgument("impedance_friction_max_compensation_torque",
+                              default_value="[0.75,0.75,0.75,0.75,0.75,0.75,0.75]",
+                              description="Per-joint friction feedforward caps [Nm]"),
         DeclareLaunchArgument("configure_collision_behavior", default_value="false"),
         DeclareLaunchArgument("collision_torque_scale", default_value="3.0"),
         DeclareLaunchArgument("collision_force_scale", default_value="3.0"),

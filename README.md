@@ -1,17 +1,26 @@
 # FR3 Low-Level and Cartesian Control Stack
-
 ROS 2 Jazzy control stack for a **Franka Research 3 (FR3)** with:
 
 - hardware-facing joint velocity control,
+
 - hardware-facing joint impedance / effort control,
+
 - automatic residual-friction compensation,
+
 - Cartesian inverse-kinematics velocity control,
+
 - constrained Cartesian QP velocity control with proactive FCL capsule self-collision avoidance,
+
 - Cartesian PID position control,
+
 - Cartesian LMPC position control,
+
 - gripper ratio control,
+
 - dynamics observation and friction identification,
+
 - config-driven UDP <-> ROS 2 bridging with Wireshark dissector generation,
+
 - readiness-driven startup instead of fixed launch delays.
 
 The stack is split into three ROS 2 packages:
@@ -20,11 +29,9 @@ The stack is split into three ROS 2 packages:
 low_level/
     Hardware-facing ros2_control controllers, gripper control,
     collision configuration, dynamics observation and calibration.
-
 franka_cartesian_control/
     Cartesian IK/QP velocity controllers and PID/LMPC position controllers.
     The QP includes optional FCL capsule self-collision constraints.
-
 udp_bridge/
     Generic JSON-configured UDP -> ROS 2 and ROS 2 -> UDP bridge for common
     standard ROS message packages, plus Wireshark Lua dissector generation.
@@ -41,7 +48,6 @@ Change `robot_ip:=...` on the command line if your robot uses another address.
 ---
 
 ## 1. Architecture
-
 The normal command chain is:
 
 ```text
@@ -68,42 +74,93 @@ For direct Cartesian velocity control, the PID/LMPC layer is omitted:
 TwistStamped -> IK/QP -> JointState -> low_level -> FR3
 ```
 
-For direct joint control, both Cartesian layers are omitted:
+### Kinematic tip frame and gripper flag
 
-```text
-JointState -> low_level -> FR3
+Franka bringup generates `/robot_description` with the selected `load_gripper`
+setting. The `controller_manager` uses that description for hardware interfaces,
+but **does not select a Cartesian KDL endpoint for IK/QP/PID/LMPC**.
+
+All four Cartesian controllers resolve their tip **after receiving the actual
+`/robot_description`**, not by guessing from `load_gripper`:
+
+| Setting | Behavior |
+|---|---|
+| `load_gripper:=false` | Franka bringup omits the hand; the controllers select an available seven-joint endpoint in the published URDF. |
+| `load_gripper:=true` | Franka bringup includes the hand; the controllers use its TCP if the published URDF contains a valid seven-joint TCP frame. |
+| `tip_link:=<frame>` | Explicit frame is required to exist in the URDF and to have exactly seven actuated joints from the root. |
+| `tip_link:=auto` (default) | Auto-resolve using available TCP/EE/flange frames in the URDF; fail rather than guess if ambiguous. |
+
+The launch-safe `tip_link:=auto` value is resolved only after a valid `/robot_description` is received. It does not treat `auto` as a literal URDF link. A controller using this version logs `URDF_TIP_AUTO_V7` with the requested value at startup. If that marker is absent, rebuild the ROS 2 workspace and check the active installation before testing motion.
+
+From the supplied official `franka_description` Xacro, the ungripped FR3
+always includes `fr3_link8` (connected by the fixed `fr3_joint8`). When
+`hand:=true`, the Franka hand adds `fr3_hand_tcp` after the flange. The
+corresponding Franka SRDF declares `link8` as the arm tip without a hand
+and `hand_tcp` when a Franka hand is attached. Automatic resolution checks
+which of these links actually exists in the received URDF.
+
+The resolver prefers an available `_hand_tcp`, `_tcp`, `_ee`, `_tool0`,
+`_link8`, or `_flange` frame (in that order). If none exists and the
+URDF contains exactly one seven-DOF descendant, it uses that frame.
+Otherwise, set `tip_link` explicitly to the physically intended TCP.
+This is essential because different TCP offsets change the Jacobian and
+Cartesian workspace/surface constraint calculations.
+
+```bash
+# Use the endpoint present in Franka's loaded robot description
+ros2 launch franka_cartesian_control position_control.launch.py \
+  load_gripper:=false tip_link:=auto
+
+# Force a specific TCP only after confirming it exists in /robot_description
+ros2 launch franka_cartesian_control position_control.launch.py \
+  load_gripper:=false tip_link:=fr3_link8
 ```
 
-Startup is readiness-driven. The next controller is started only after the previous layer has published its operational `ready` state and required topics are present.
+Startup prints the **resolved** chain only after `/robot_description` has
+been parsed, for example `Kinematics initialized from /robot_description:
+fr3_link0 -> fr3_link8`. A wrong explicit tip produces a clear error and
+prevents readiness, rather than silently falling back.
 
-Important ready topics include:
+**v7.1 linker compatibility fix:** The static `cartesian_control_common_v7`
+library now exports both `Kinematics::initialize` (used by older controller
+source files) and `Kinematics::initializeFromRobotDescriptionV7` (used by v7
+source files). Both call the same URDF-aware resolver; neither treats `auto`
+as a literal link name. This repairs undefined-reference linker errors when
+older controller translation units are built alongside v7 kinematics.
+Use the complete package contents together, and verify both symbols:
 
-```text
-/low_level_joint_velocity_controller/ready
-/low_level_joint_impedance_controller/ready
-/dynamics_observer_controller/ready
-/ik_velocity_controller/ready
-/qp_velocity_controller/ready
+```bash
+nm -C ~/alexis_ws/build/franka_cartesian_control/libcartesian_control_common_v7.a | grep -E 'Kinematics::(initialize|initializeFromRobotDescriptionV7)'
 ```
+
+The startup marker `URDF_TIP_AUTO_V7` alone proves only the node was updated,
+not that its kinematics library was updated: v6 had exactly that weakness.
+Do a clean build and source **only the necessary overlays** before launching.
+If `auto` is still interpreted as a literal URDF frame, the running
+installation is not this v7 build.
 
 ---
 
 ## 2. Safety
-
 This repository controls a real 7-DoF robot at high update rates. Treat every command as potentially capable of producing motion immediately.
 
 Before enabling motion:
 
 1. Make sure the robot is firmly mounted.
+
 2. Clear the full reachable workspace.
+
 3. Verify the configured end effector and payload in Franka Desk.
+
 4. Verify the robot IP and network connection.
+
 5. Enable FCI according to the Franka operating procedure.
+
 6. Keep an emergency stop / safe-stop method available.
+
 7. Start with conservative velocity, acceleration and torque limits.
 
 ### QP self-collision safety
-
 The QP now includes proactive self-collision avoidance.  It uses the Flexible Collision Library (FCL) with conservative capsule proxies connecting successive FR3 link-frame origins.  Non-neighbouring capsule pairs become hard control-barrier inequalities in the joint-velocity QP.
 
 The constraint is conceptually:
@@ -114,12 +171,11 @@ d_dot >= -gain * (d - margin)
 
 where `d` is the current FCL capsule surface-to-surface clearance.  At the configured margin the pair may not move closer; inside the margin the QP requests separating velocity, subject to the current joint velocity and acceleration bounds.
 
-This is intentionally much lighter than MoveIt collision checking, but it is an **approximation**, not an exact mesh guarantee.  The current proxy covers the arm through `link8`; it does not model gripper fingers or arbitrary attached tools as exact meshes.  Validate the configured capsule radii and margin for the real hardware and installed end effector.
+This is intentionally much lighter than MoveIt collision checking, but it is an ****approximation****, not an exact mesh guarantee.  The current proxy covers the arm through `link8`; it does not model gripper fingers or arbitrary attached tools as exact meshes.  Validate the configured capsule radii and margin for the real hardware and installed end effector.
 
 Franka's internal collision/reflex system remains the final hardware protection layer.
 
 ### Collision thresholds
-
 The low-level launch can optionally call Franka's full collision-behavior service before activating the command controller. This is disabled by default:
 
 ```text
@@ -131,7 +187,6 @@ Changing collision thresholds changes the robot's safety response. Only change t
 ---
 
 ## 3. Tested workspace layout
-
 The examples in this README assume:
 
 ```text
@@ -139,7 +194,6 @@ The examples in this README assume:
     src/
     build/
     install/
-
 ~/franka_ws/
     src/
         low_level/
@@ -162,10 +216,8 @@ The custom workspace can be located elsewhere, but the examples below use `~/fra
 ---
 
 # 4. Installation
-
 ## 4.1 Operating system and ROS 2
-
-The project targets **ROS 2 Jazzy**. The current Franka ROS 2 repository also targets Jazzy on its `jazzy` branch.
+The project targets ****ROS 2 Jazzy****. The current Franka ROS 2 repository also targets Jazzy on its `jazzy` branch.
 
 Install ROS 2 Jazzy and development tools, for example:
 
@@ -187,7 +239,6 @@ For real hardware, configure the host for reliable real-time communication accor
 ---
 
 ## 4.2 Install `franka_ros2`
-
 Create the Franka workspace:
 
 ```bash
@@ -239,7 +290,6 @@ ros2 pkg prefix franka_bringup
 ---
 
 ## 4.3 Install additional system dependencies
-
 The low-level calibration scripts use NumPy, SciPy and YAML. The QP self-collision layer uses FCL. Wireshark is optional but useful for inspecting UDP traffic:
 
 ```bash
@@ -259,7 +309,6 @@ ROS package dependencies can also be resolved with `rosdep` after placing the cu
 ---
 
 ## 4.4 Install qpOASES
-
 Both the Cartesian QP controller and LMPC use qpOASES.
 
 Clone it into the custom workspace source directory:
@@ -275,11 +324,9 @@ Build and install it into a workspace-local prefix:
 cd ~/franka_ws/src/qpoases
 mkdir -p build
 cd build
-
 cmake .. \
   -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_INSTALL_PREFIX=$HOME/franka_ws/qpoases_install
-
 cmake --build . -j$(nproc)
 cmake --install .
 ```
@@ -295,7 +342,6 @@ unless `-DQPOASES_ROOT=...` is supplied explicitly.
 ---
 
 ## 4.5 Install the custom packages
-
 Place the three packages in:
 
 ```text
@@ -317,7 +363,6 @@ Then install ROS dependencies:
 cd ~/franka_ws
 source /opt/ros/jazzy/setup.bash
 source ~/franka_ws/install/setup.bash
-
 rosdep install --from-paths src --ignore-src -y
 ```
 
@@ -325,10 +370,8 @@ Build all three packages:
 
 ```bash
 cd ~/franka_ws
-
 source /opt/ros/jazzy/setup.bash
 source ~/franka_ws/install/setup.bash
-
 colcon build \
   --packages-select low_level franka_cartesian_control udp_bridge \
   --symlink-install \
@@ -356,13 +399,18 @@ Use that order in every new terminal.
 ---
 
 # 5. Robot preparation before running controllers
-
 1. Connect the control PC directly to the Franka network.
+
 2. Verify connectivity to the robot IP.
+
 3. Open Franka Desk.
+
 4. Resolve any safety faults.
+
 5. Configure the correct end-effector / payload profile.
+
 6. Activate FCI as required by the Franka system image.
+
 7. Clear the workspace.
 
 For the commands below, replace the IP if necessary:
@@ -393,7 +441,6 @@ The `TwistStamped` numeric components are also interpreted in the controller roo
 ---
 
 # 7. Low-level joint velocity controller
-
 Launch only the low-level velocity controller:
 
 ```bash
@@ -453,7 +500,6 @@ Stop the publisher to allow the watchdog/tracker to return toward zero velocity.
 ---
 
 # 8. Low-level joint impedance controller
-
 Launch:
 
 ```bash
@@ -480,8 +526,8 @@ Default impedance parameters are deliberately light:
 
 ```text
 stiffness    = [0,0,0,0,0,0,0]
-damping      = [2,2,2,2,2,2,2]
-mass_damping = [5,5,5,5,5,5,5]
+damping      = [1.5,1.5,1.5,1.5,1.5,1.5,1.5]
+mass_damping = [3,3,3,3,3,3,3]
 delta_tau_max = 1.0
 ```
 
@@ -492,8 +538,8 @@ With zero stiffness, a high-level IK/QP can send desired joint velocity and the 
 | Launch argument | Default | Meaning |
 |---|---:|---|
 | `stiffness` | `[0,...,0]` | Joint position stiffness |
-| `damping` | `[2,...,2]` | Joint velocity-error damping |
-| `mass_damping` | `[5,...,5]` | Mass-matrix-shaped velocity damping |
+| `damping` | `[1.5,...,1.5]` | Joint velocity-error damping |
+| `mass_damping` | `[3,...,3]` | Mass-matrix-shaped velocity damping |
 | `effort_feedforward_scale` | `1.0` | Scale on incoming JointState effort field |
 | `delta_tau_max` | `1.0` | Maximum per-cycle torque command change |
 | `max_torque` | `[0,...,0]` | Optional torque limit; `0` disables limit per joint |
@@ -502,107 +548,117 @@ With zero stiffness, a high-level IK/QP can send desired joint velocity and the 
 
 ---
 
-# 9. Automatic friction compensation
+# 9. Automatic friction compensation (Stribeck by default)
 
-Friction compensation is enabled by default in impedance mode:
+**Applies only in low-level impedance/effort mode.** The low-level velocity
+controller does not apply this feedforward model.
 
-```text
-friction_compensation_enabled:=true
-```
-
-The current controller uses a strictly odd residual-friction model:
+The current impedance controller uses the strictly odd, smoothed Stribeck law:
 
 ```text
-tau_f(dq) = Fc * tanh(dq / epsilon) + B * dq
+Fc_eff(dq) = Fc + (Fs - Fc) * exp(-(dq / vs)^2)
+tau_f(dq) = Fc_eff(dq) * tanh(dq / epsilon) + B * dq
+tau_comp(dq) = clamp(scale * tau_f(dq), -tau_cap, +tau_cap)
 ```
 
-where:
+- `Fc` is Coulomb friction, `Fs >= Fc` is the fitted low-speed amplitude,
+  `B >= 0` is viscous friction, `vs > 0` is the Stribeck velocity, and
+  `epsilon` is a fixed smoothing velocity (0.01 rad/s for the current calibration).
+- The model remains **zero at exactly zero velocity**; it does not command a
+  static breakaway torque.
+- Per-joint Coulomb fallback (`Fs = Fc`) is selected when the Stribeck peak
+  fails held-out-repeat validation.
+- No even/constant torque bias is applied. Franka's `M/C/g` model is unchanged.
 
-- `Fc >= 0` is the identified Coulomb magnitude,
-- `B >= 0` is the identified viscous coefficient,
-- `epsilon` is a fixed low-speed smoothing velocity,
-- no fitted constant torque bias is applied.
+**Current runtime behavior:** Feedforward uses the *measured* joint velocity
+at **all velocities**, with no speed-band clamping and no low-speed taper.
+The calibration's validated speed limits are retained for reference only.
+Compensation outside those limits is extrapolation and may be inaccurate.
+The per-joint torque cap remains active. Friction feedforward is **disabled as
+soon as the low-level joint command becomes stale**; with the default
+`hold_position_on_timeout:=false`, the active velocity-error damping also stops
+on timeout. Publish fresh joint commands continuously when actively controlling.
 
-The strictly odd model intentionally rejects even/configuration-dependent residual torque so gravity, payload or sensor-offset errors are less likely to be misidentified as friction.
+## 9.1 Calibration file selection and formats
 
-## 9.1 Automatic file selection
+`low_level/launch/control.launch.py` selects the newest calibration matching
+`friction_calibration_*.yaml` or `*.yml` in the configured calibration directory
+(default: `<workspace>/data/calibration`). The file must be fresh (default age
+limit: 24 hours), have the expected seven joint names, and pass model validation.
+Without a fresh valid calibration, impedance starts but friction feedforward
+stays **disabled**.
 
-When impedance mode starts, `control.launch.py` searches for:
+- **Default:** `friction_stribeck_enabled:=true` requires schema **4** and
+  `model: odd_stribeck_viscous_tanh`, including `coulomb_Nm`, `viscous_Nm_per_rad_s`,
+  `static_friction_amplitude_Nm`, `stribeck_velocity_rad_s`, and a valid
+  `recommended_enable` array.
+- **Legacy mode:** `friction_stribeck_enabled:=false` explicitly selects the
+  schema-3 Coulomb-viscous file with `model: odd_coulomb_viscous_tanh`.
+  This does *not* silently upgrade an old calibration into Stribeck.
 
-```text
-friction_calibration_*.yaml
-friction_calibration_*.yml
-```
+## 9.2 Launch options
 
-in:
-
-```text
-<workspace>/data/calibration
-```
-
-The newest valid file is selected.
-
-By default it must be younger than:
-
-```text
-24 hours
-```
-
-If no valid fresh calibration is available, the impedance controller still starts, but friction feedforward is disabled.
-
-The file must use:
-
-```text
-model: odd_coulomb_viscous_tanh
-```
-
-and the joint names must exactly match the active robot.
-
-## 9.2 Friction options
-
-| Launch argument | Default | Meaning |
-|---|---:|---|
-| `friction_compensation_enabled` | `true` | Request automatic compensation |
-| `friction_calibration_directory` | empty | Empty auto-detects `<workspace>/data/calibration` |
+| Argument (`low_level/control.launch.py`) | Default | Purpose |
+|---|---|---|
+| `friction_compensation_enabled` | `true` | Request automatic friction feedforward |
+| `friction_stribeck_enabled` | `true` | Require schema-v4 Stribeck calibration |
+| `friction_calibration_directory` | empty | Auto-resolve `<workspace>/data/calibration` |
 | `friction_calibration_file` | empty | Explicit file override |
-| `friction_calibration_max_age_hours` | `24.0` | Maximum age for automatic loading |
-| `friction_use_recommended_enable` | `true` | Honor per-joint quality mask |
-| `friction_compensation_scale` | `1.0` | Global scale on compensation |
-| `friction_apply_torque_bias` | `false` | Deprecated; ignored by the odd model |
+| `friction_calibration_max_age_hours` | `24.0` | Reject stale calibration |
+| `friction_use_recommended_enable` | `true` | Apply calibrated per-joint quality mask |
+| `friction_compensation_scale` | `1.0` | Global feedforward scale, range [0, 1] |
+| `friction_max_compensation_torque` | `[0.75]*7` | Absolute per-joint friction feedforward cap, Nm |
+| `friction_apply_torque_bias` | `false` | Deprecated: ignored; no even bias is applied |
 
-Example: force a particular calibration file:
+`friction_compensation_scale:=0.0` disables the feedforward torque while keeping
+file-loading logic available. `friction_compensation_enabled:=false` disables it
+explicitly. `friction_max_compensation_torque` and other friction parameters are
+resolved by the low-level launch. The high-level launches forward the
+`impedance_friction_*` arguments, including `impedance_friction_stribeck_enabled`
+and `impedance_friction_max_compensation_torque`.
 
-```bash
-ros2 launch low_level control.launch.py \
-  robot_ip:=192.16.0.1 \
-  mode:=impedance \
-  friction_calibration_file:=$HOME/franka_ws/data/calibration/friction_calibration_YYYYMMDD_HHMMSS.yaml
-```
-
-Disable friction compensation:
-
-```bash
-ros2 launch low_level control.launch.py \
-  robot_ip:=192.16.0.1 \
-  mode:=impedance \
-  friction_compensation_enabled:=false
-```
-
-Test at half compensation strength:
+Example: select the newest valid schema-v4 file:
 
 ```bash
 ros2 launch low_level control.launch.py \
-  robot_ip:=192.16.0.1 \
-  mode:=impedance \
-  friction_compensation_scale:=0.5
+  mode:=impedance load_gripper:=false \
+  friction_stribeck_enabled:=true friction_compensation_scale:=0.3
 ```
 
-The controller clamps the velocity used by the friction model to the per-joint validated calibration range rather than extrapolating indefinitely beyond measured speeds.
+Or select a specific file:
+
+```bash
+ros2 launch low_level control.launch.py \
+  mode:=impedance load_gripper:=false \
+  friction_calibration_file:=$HOME/alexis_ws/data/calibration/friction_calibration_20261008_135505.yaml
+```
+
+To use an old Coulomb calibration intentionally:
+
+```bash
+ros2 launch low_level control.launch.py \
+  mode:=impedance friction_stribeck_enabled:=false \
+  friction_calibration_file:=/absolute/path/to/schema3_calibration.yaml
+```
+
+**Important:** The low-level launch default is currently `scale=1.0`, not
+`0.3`. The high-level impedance launch also defaults to `1.0`, and can override
+lower-level settings. Use explicit launch parameters when testing compensation.
+
+For the high-level position controller (which forwards these options):
+
+```bash
+ros2 launch franka_cartesian_control position_control.launch.py \
+  low_level_mode:=impedance load_gripper:=false \
+  impedance_friction_stribeck_enabled:=true \
+  impedance_friction_compensation_scale:=0.3 \
+  impedance_friction_max_compensation_torque:='[0.75,0.75,0.75,0.75,0.75,0.75,0.75]'
+```
+
 
 ---
 
 # 10. Cartesian IK velocity controller
-
 Launch the IK stack with its default low-level velocity controller:
 
 ```bash
@@ -644,7 +700,6 @@ Stop the publisher to stop commanding Cartesian motion.
 ---
 
 # 11. Cartesian QP velocity controller
-
 Launch:
 
 ```bash
@@ -658,7 +713,6 @@ The QP solves for joint velocity while tracking Cartesian twist as a soft least-
 The same `/fr3/cartesian_twist_command` interface is used as for IK.
 
 ### Default Cartesian velocity launch limits
-
 The standalone `cartesian_control.launch.py` launch defaults are:
 
 ```text
@@ -671,7 +725,6 @@ joint_limit_margin = 0.08 rad
 These launch arguments override the corresponding values from `config/controllers.yaml`.
 
 ### QP objective defaults from `config/controllers.yaml`
-
 ```text
 task_weights    = [1,1,1,0.30,0.30,0.30]
 regularization  = 0.0001
@@ -681,7 +734,6 @@ posture_target  = [0,0,0,-1.5708,0,1.5708,0.7854]
 ```
 
 ### Surface constraints
-
 Surface half spaces use:
 
 ```text
@@ -705,7 +757,6 @@ z >= 0.08 m
 The QP includes soft recovery behavior after a configured joint or surface boundary is violated. `repulsion_when_idle:=true` allows recovery to wake the QP without an external twist command after a joint/surface violation or when a self-collision capsule pair has moved inside its safety margin.
 
 ### QP self-collision constraints
-
 Self-collision avoidance is enabled by default for the QP:
 
 ```text
@@ -743,7 +794,6 @@ The capsule model is deliberately simple. It protects against the common arm-fol
 ---
 
 # 12. Using the Cartesian controllers with low-level impedance
-
 Both IK and QP can feed the low-level impedance controller instead of the velocity interface.
 
 Example QP + impedance:
@@ -777,7 +827,6 @@ impedance_friction_compensation_scale
 ---
 
 # 13. Cartesian PID position controller
-
 The position stack adds a pose-to-twist controller above IK or QP.
 
 Recommended default combination:
@@ -847,7 +896,6 @@ No TF conversion is performed if another frame is supplied.
 ---
 
 # 14. Cartesian LMPC position controller
-
 Launch LMPC over QP:
 
 ```bash
@@ -891,7 +939,6 @@ lmpc_terminal_velocity_weights     = [50,50,50,50,50,50]
 Other LMPC parameters, including horizon and state weights, come from `config/position_controllers.yaml`. The current configured horizon is `25`.
 
 ### LMPC obstacle input
-
 Runtime obstacles are accepted on:
 
 ```text
@@ -902,9 +949,13 @@ visualization_msgs/msg/Marker
 Requirements:
 
 - marker type must be `TRIANGLE_LIST`,
+
 - point count must be a non-zero multiple of three,
+
 - marker coordinates must already be expressed in the LMPC root frame,
+
 - no TF transform is applied,
+
 - runtime meshes are treated as two-sided obstacles.
 
 A one-sided default table is enabled in the configuration and uses the `+Z` side as valid.
@@ -912,7 +963,6 @@ A one-sided default table is enabled in the configuration and uses the `+Z` side
 ---
 
 # 15. Position control with low-level impedance and friction compensation
-
 Example PID -> QP -> impedance:
 
 ```bash
@@ -938,7 +988,6 @@ The position launch propagates the impedance-friction options using the `impedan
 ---
 
 # 16. Gripper control
-
 The gripper node is started automatically by `low_level/control.launch.py` when:
 
 ```text
@@ -988,7 +1037,6 @@ gripper_close_uses_grasp = true
 ---
 
 # 17. Dynamics observer
-
 `low_level/DynamicsObserverController` is a read-only ros2_control controller used primarily by calibration.
 
 It publishes:
@@ -1031,43 +1079,51 @@ ros2 run controller_manager spawner dynamics_observer_controller \
 ---
 
 # 18. Franka Desk torque-sensor calibration
-
 Run Franka's native torque-sensor calibration **before** identifying residual drivetrain friction if the torque offsets may have drifted.
 
 The automatic routine is available in modern FR3 system images; Franka introduced the field torque-calibration feature in System Image 5.8.
 
 ## 18.1 When to run it
-
 Typical reasons include:
 
 - hand-guiding feels unbalanced,
+
 - a joint appears to push or pull with no intended force,
+
 - force/torque threshold violations occur unexpectedly,
+
 - the robot has experienced significant impact or wear,
+
 - Franka support requests recalibration.
 
 Do not run it routinely just because a friction calibration is old. It is a sensor-offset calibration, not the same thing as this repository's friction identification.
 
 ## 18.2 Physical preparation
-
-The official procedure requires the arm to be mounted on a **fixed, horizontal, flat surface** and positioned upright/level. Vibrations or mounting tilt can degrade the result.
+The official procedure requires the arm to be mounted on a ****fixed, horizontal, flat surface**** and positioned upright/level. Vibrations or mounting tilt can degrade the result.
 
 Before starting:
 
 1. Clear the robot's complete workspace. The routine moves through a large portion of the workspace.
+
 2. Make sure the mounting surface cannot vibrate during calibration.
+
 3. Remove the end effector from the robot arm as required by the Franka procedure.
-4. Select the Franka Desk end-effector profile **No End Effector**.
+
+4. Select the Franka Desk end-effector profile ****No End Effector****.
+
 5. Make sure the user performing calibration has the required Admin privileges.
+
 6. Claim control of the arm.
+
 7. Unlock the joints.
-8. Set operating mode to **Execution**.
+
+8. Set operating mode to ****Execution****.
+
 9. Make sure no task is running and the Watchman/system configuration is valid.
 
 Franka notes that even small mounting-angle errors can affect calibration.
 
 ## 18.3 Run the Desk procedure
-
 In Franka Desk:
 
 ```text
@@ -1086,9 +1142,13 @@ Then follow the four guided stages:
 During the automatic routine:
 
 - stay outside the robot workspace,
+
 - do not touch the robot,
+
 - do not obstruct its path,
+
 - do not cause vibrations in the mounting surface,
+
 - a yellow status indication while passing through a singular configuration can be expected.
 
 The procedure can take several minutes.
@@ -1098,165 +1158,117 @@ At the end, review the newly calculated offsets and choose the Desk action to ap
 After the calibration:
 
 1. Power-cycle the robot if requested by the Desk/system-image procedure.
+
 2. Reinstall the normal end effector.
+
 3. Restore the correct end-effector profile.
+
 4. Restore the correct payload configuration.
+
 5. Verify hand-guiding behavior before running this control stack.
 
 If behavior is worse, repeat the official calibration or revert to factory torque offsets in Desk.
 
 ---
 
-# 19. Residual-friction calibration
+# 19. Residual-friction identification (single-start-pose Stribeck)
 
-This repository does **not** replace Franka's rigid-body dynamics model. The current calibration keeps Franka's:
+The identification keeps Franka's rigid-body model (`M(q)`, Coriolis, and
+`g(q)`) fixed and fits an **odd friction residual** using position-matched
+positive/negative joint sweeps. Constant/even torque bias is diagnostic only.
 
-```text
-M(q)
-C(q,dq)
-g(q)
-```
+The identification starts from **one initial seven-joint configuration**, then
+excites **one joint at a time** around that start configuration with paired
+positive/negative motion. This is **not** a multi-pose friction map, and it does
+not mean the joint angle remains fixed during the sweep.
 
-fixed and identifies only residual joint friction.
+## 19.1 Recommended preparation
 
-The final fitted controller model is strictly odd:
+Verify mechanical clearance, robot mounting, Desk/FCI state, payload and tool
+configuration, collision protection, and that a calibrated operator can stop
+motion. Do not run the experiment unattended. Perform Franka's *separate*
+torque-sensor calibration in Desk only when needed. Check dynamics observation
+reliability before enabling excitation; a stale observer reading aborts the run.
 
-```text
-tau_f(dq) = Fc * tanh(dq / epsilon) + B * dq
-```
-
-The identification uses matched `+v/-v` motion and position-matched odd torque components to reject much of the configuration-dependent/even residual torque.
-
-## 19.1 Recommended order
-
-Use this sequence:
-
-```text
-1. Verify robot mounting and payload configuration
-2. Run Franka Desk torque-sensor calibration if needed
-3. Restore the normal end-effector/payload configuration
-4. Reboot / power-cycle as required by Franka
-5. Start FCI
-6. Run the friction identification below
-7. Inspect the generated quality mask
-8. Run impedance control with automatic friction loading
-```
-
-## 19.2 Run friction identification
-
-The critical command is:
+## 19.2 Run the experiment
 
 ```bash
+# Record-only: observer/data-path check; does not generate a usable friction fit
 ros2 launch low_level dynamics_identification.launch.py \
-  robot_ip:=192.16.0.1 \
-  run_motion:=true \
-  motion_mode:=joint
-```
-
-### `run_motion:=true` is mandatory
-
-For safety, the current launch default is:
-
-```text
-run_motion:=false
-```
-
-If you omit `run_motion:=true`, the script runs in **record-only** mode. The robot will not execute the friction sweep, there will be no usable plateau samples, and no controller-ready calibration YAML will be generated.
-
-A record-only launch is useful only for checking the observer/data path:
-
-```bash
+  load_gripper:=false run_motion:=false
+# Physical sequential joint sweep; check workspace clearance first
 ros2 launch low_level dynamics_identification.launch.py \
-  robot_ip:=192.16.0.1 \
-  run_motion:=false
+  load_gripper:=false motion_mode:=joint run_motion:=true
 ```
 
-## 19.3 Current friction-sweep defaults
+`run_motion:=false` is the safe launch default. For friction calibration, use
+`motion_mode:=joint`; `motion_mode:=qp` is a separate diagnostic excitation.
+The experiment uses a velocity-controller command path, not the impedance
+friction feedforward being calibrated.
+
+## 19.3 Current default sweep settings
+
+| Parameter | Default |
+|---|---|
+| `friction_velocity_levels` | `[0.008,0.012,0.02,0.03,0.045,0.065,0.10,0.15]` rad/s |
+| `friction_repeats` | `4` |
+| `friction_ramp_time` | `0.35` s |
+| `friction_hold_time` | `0.45` s |
+| `friction_max_hold_time` | `2.0` s |
+| `friction_min_plateau_travel_rad` | `0.01` rad |
+| `friction_min_fit_velocity` | `0.004` rad/s |
+| `friction_pause_time` | `0.15` s |
+| `friction_plateau_trim_time` | `0.10` s |
+| `friction_max_fit_acceleration` | `0.05` rad/s² |
+| `friction_pair_grid_points` | `15` |
+| `friction_min_pair_samples` | `6` |
+| `friction_smoothing_velocity` | `0.01` rad/s |
+| `joint_max_joint_displacement` | `0.20` rad |
+
+Adaptive plateau durations allow the requested minimum travel at slow speeds.
+The sweep uses four repetitions and alternating order to detect drift. Actual
+travel and run time depend on the commanded speeds and limits. The launch has
+measured-state and data-watchdog abort protections.
+
+## 19.4 Fit and quality validation
+
+The script fits Coulomb/viscous and smoothed Stribeck alternatives to matched
+`+v/-v` odd torque residuals. It evaluates held-out-repeat predictions.
+Stribeck is selected per joint only when the low-speed peak is identifiable and
+provides sufficient validation improvement; otherwise, the output uses
+`model_selected_by_joint: coulomb_fallback` and `Fs = Fc` for that joint.
+Each joint has a quality class and a recommended-enable mask.
+
+The output files in `<workspace>/data/calibration` are:
 
 ```text
-motion_mode                    = joint
-friction_repeats               = 4
-friction_ramp_time             = 0.30 s
-friction_hold_time             = 0.35 s
-friction_pause_time            = 0.15 s
-friction_plateau_trim_time     = 0.10 s
-friction_max_fit_acceleration  = 0.05 rad/s^2
-friction_pair_grid_points      = 15
-friction_min_pair_samples      = 6
-friction_smoothing_velocity    = 0.01 rad/s
-joint_max_joint_displacement   = 0.20 rad
+friction_identification_YYYYMMDD_HHMMSS.csv   # recorded dynamics
+friction_identification_YYYYMMDD_HHMMSS.json  # fit and repeat diagnostics
+friction_calibration_YYYYMMDD_HHMMSS.yaml     # schema-v4 runtime parameters
 ```
 
-The sweep uses several positive and negative steady speeds and alternating repeat order to expose drift/order dependence.
+The calibration YAML stores the reference joint configuration and the
+validated velocity band for diagnostics. It is **not** a safety certificate for
+unmeasured robot poses or unmeasured velocities. The low-level controller no
+longer uses the velocity bounds as runtime clipping limits; it applies the
+friction law at every finite measured speed, subject to the per-joint torque cap.
 
-The experiment aborts when its safety guards are exceeded.
+## 19.5 Freshness and use
 
-## 19.4 Output files
+A calibration is automatically eligible only within the configured age limit
+(default 24 hours). An explicit file is still subject to model, joint-name,
+quality, and freshness checks. The launch logs the selected file and whether
+friction compensation is active. If the calibration is rejected, friction
+feedforward stays off.
 
-The default output directory is:
-
-```text
-~/franka_ws/data/calibration/
-```
-
-A successful run writes:
-
-```text
-friction_identification_YYYYMMDD_HHMMSS.csv
-friction_identification_YYYYMMDD_HHMMSS.json
-friction_calibration_YYYYMMDD_HHMMSS.yaml
-```
-
-The CSV contains the recorded dynamics data.
-
-The JSON contains the complete fitting diagnostics, quality metrics and repeatability information.
-
-The YAML is the compact file consumed automatically by the low-level impedance controller.
-
-Override the directory if needed:
-
-```bash
-ros2 launch low_level dynamics_identification.launch.py \
-  robot_ip:=192.16.0.1 \
-  run_motion:=true \
-  motion_mode:=joint \
-  output_directory:=$HOME/franka_ws/data/calibration/test_01
-```
-
-## 19.5 Calibration quality mask
-
-The YAML contains per-joint quality and:
-
-```text
-recommended_enable
-```
-
-By default the impedance launch honors that mask. A poor joint is left uncompensated rather than forcing a questionable friction estimate into the effort controller.
-
-You can ignore the mask deliberately with:
-
-```text
-friction_use_recommended_enable:=false
-```
-
-but that should normally be avoided.
-
-## 19.6 Freshness rule
-
-A calibration is considered automatically usable only when it is newer than the configured maximum age, default:
-
-```text
-24 hours
-```
-
-The launch uses the embedded generation timestamp when available and otherwise falls back to file modification time.
-
-This prevents an old calibration from being silently reused after conditions have changed.
+For a supervised initial run with a newly validated calibration, an explicitly
+reduced scale such as `0.3` can be used; increase it only after observing
+stable real-robot behavior. During loss of the joint-command stream, friction
+feedforward is disabled independently of the chosen scale.
 
 ---
 
 # 20. Legacy QP excitation mode in the identification launch
-
 `dynamics_identification.launch.py` still accepts:
 
 ```text
@@ -1273,12 +1285,11 @@ motion_mode:=joint
 
 for the controller friction YAML.
 
-When the identification launch runs without the gripper, it automatically uses `fr3_link8` as the QP tip. With `load_gripper:=true`, it uses `fr3_hand_tcp`. An explicit `qp_tip_link:=...` override is also available.
+For `motion_mode:=qp`, the QP controller resolves its tip from the loaded `/robot_description`, irrespective of the `load_gripper` flag. Use `qp_tip_link:=...` to select an explicit TCP present in that URDF.
 
 ---
 
 # 21. Main launch options
-
 ## 21.1 `low_level/control.launch.py`
 
 | Argument | Default |
@@ -1355,7 +1366,6 @@ The optional 1 kHz Franka full-state broadcaster is disabled by default to leave
 ---
 
 # 22. Collision-behavior configuration
-
 Enable collision configuration during low-level startup:
 
 ```bash
@@ -1381,7 +1391,6 @@ Default threshold arrays are also individually configurable through the launch f
 ---
 
 # 23. Using an already-running low-level stack
-
 The Cartesian launch files normally start `low_level` themselves.
 
 If low-level bringup is already running, disable the nested bringup:
@@ -1406,7 +1415,6 @@ Make sure the expected `/franka/joint_states`, `/fr3/joint_commands` and low-lev
 ---
 
 # 24. Fake hardware
-
 The low-level launch accepts:
 
 ```text
@@ -1428,7 +1436,6 @@ Use fake hardware for software/interface checks, not for validating real torque/
 ---
 
 # 25. Useful ROS 2 inspection commands
-
 List controllers:
 
 ```bash
@@ -1481,7 +1488,6 @@ ros2 topic info -v /fr3/cartesian_twist_command
 ---
 
 # 26. Recommended controller combinations
-
 For simple Cartesian velocity control:
 
 ```text
@@ -1521,7 +1527,6 @@ LMPC -> QP -> low-level velocity or impedance
 ---
 
 # 27. UDP <-> ROS 2 bridge
-
 The `udp_bridge` package provides two generic nodes driven by JSON configuration files in:
 
 ```text
@@ -1533,7 +1538,6 @@ The `udp_bridge` package provides two generic nodes driven by JSON configuration
 No message-specific bridge code is required for common ROS 2 message packages.  The bridge intentionally limits dynamic message loading to standard packages such as `std_msgs`, `geometry_msgs`, `sensor_msgs`, `nav_msgs`, `trajectory_msgs`, `shape_msgs`, `visualization_msgs`, `diagnostic_msgs` and `builtin_interfaces`.
 
 ## 27.1 UDP -> ROS 2
-
 `udp_reader.json` defines one or more receiving sockets. Each endpoint specifies:
 
 ```text
@@ -1580,7 +1584,6 @@ Use `count` for fixed-size arrays. `endianness` can be `little`, `big` or `netwo
 For variable/structured traffic, use JSON encoding and map a JSON path into a ROS field.
 
 ## 27.2 ROS 2 -> UDP
-
 `udp_publisher.json` performs the reverse mapping. Each endpoint specifies the subscribed ROS topic/type, destination address/port, optional local bind address/port, socket options and binary/JSON field mapping.
 
 The included example subscribes to:
@@ -1599,13 +1602,11 @@ q[0..6], dq[0..6]
 to the configured UDP destination.
 
 ## 27.3 Run the bridge
-
 Build it with the rest of the workspace, then:
 
 ```bash
 source /opt/ros/jazzy/setup.bash
 source ~/franka_ws/install/setup.bash
-
 ros2 launch udp_bridge udp_bridge.launch.py
 ```
 
@@ -1636,7 +1637,6 @@ ros2 launch udp_bridge udp_bridge.launch.py \
 ---
 
 # 28. Rebuilding after code changes
-
 Clean only the three custom packages:
 
 ```bash
@@ -1651,7 +1651,6 @@ Rebuild:
 ```bash
 source /opt/ros/jazzy/setup.bash
 source ~/franka_ws/install/setup.bash
-
 colcon build \
   --packages-select low_level franka_cartesian_control udp_bridge \
   --symlink-install \
@@ -1669,7 +1668,6 @@ source ~/franka_ws/install/setup.bash
 ---
 
 # 29. Configuration files
-
 Main files:
 
 ```text
@@ -1685,7 +1683,9 @@ Remember that launch arguments passed as node parameters override values from th
 This is particularly relevant for:
 
 - Cartesian max joint velocity/acceleration,
+
 - PID gains and max twist,
+
 - several LMPC tuning values.
 
 Use the effective launch arguments shown by your command line as the final source of truth.
@@ -1693,12 +1693,14 @@ Use the effective launch arguments shown by your command line as the final sourc
 ---
 
 # 30. External references
-
 Official Franka resources:
 
 - Franka ROS 2 repository: https://github.com/frankarobotics/franka_ros2
+
 - Franka Control Interface documentation: https://frankarobotics.github.io/docs/
+
 - Franka product documentation / current operating manuals: https://franka.de/documents
+
 - Franka Research 3 releases: https://franka.de/products/franka-research-3/releases
 
 qpOASES:
@@ -1708,7 +1710,9 @@ qpOASES:
 FCL and Wireshark:
 
 - https://github.com/flexible-collision-library/fcl
+
 - https://www.wireshark.org/docs/wsug_html/
+
 - https://www.wireshark.org/docs/wsdg_html_chunked/wsluarm_modules.html
 
 For torque-sensor calibration, always follow the operating manual corresponding to the System Image installed on the robot. The exact Desk labels can change between system-image versions.
@@ -1716,5 +1720,4 @@ For torque-sensor calibration, always follow the operating manual corresponding 
 ---
 
 # 31. Package license note
-
 `franka_cartesian_control/package.xml` currently declares Apache-2.0.

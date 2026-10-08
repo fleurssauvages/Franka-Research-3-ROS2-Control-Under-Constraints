@@ -3,7 +3,8 @@
     robot_type: fr3
     arm_prefix: ""
     root_link: ""
-    tip_link: ""
+    load_gripper: false # Bringup setting; not used to guess the KDL tip
+    tip_link: "auto"    # Resolve TCP/EE from /robot_description; explicit link also supported
 
     robot_description_topic: /robot_description
     joint_state_topic: /franka/joint_states
@@ -54,7 +55,7 @@ lmpc_position_controller:
 
     obstacle_mesh_topic: /fr3/lmpc_obstacle_mesh
     obstacles.enabled: true
-    obstacles.safety_distance: 0.05
+    obstacles.safety_distance: 0.01
     obstacles.influence_distance: 0.15
     obstacles.barrier_gain: 3.0
     obstacles.max_active_meshes: 16

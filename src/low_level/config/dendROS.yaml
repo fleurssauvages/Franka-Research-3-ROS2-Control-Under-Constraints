@@ -1,0 +1,27 @@
+groups:
+  controller_manager:
+    color: blue
+    label: ""
+    nodes:
+      - spawner
+  franka_cartesian_control:
+    color: green
+    label: ""
+    nodes:
+      - qp_velocity_controller
+  low_level:
+    color: yellow
+    label: ""
+    nodes:
+      - collision_behavior_configurator
+      - dynamics_identification_experiment
+      - gripper_control_node
+      - identification_observer_ready
+      - identification_qp_ready
+      - identification_velocity_ready
+      - low_level_bringup_ready
+
+defaults:
+  color_mode: tag_only
+  show_group_tag: true
+  unmatched_color: null

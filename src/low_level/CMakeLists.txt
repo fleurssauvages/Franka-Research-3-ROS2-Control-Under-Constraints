@@ -97,4 +97,8 @@ ament_export_dependencies(
   franka_semantic_components
 )
 
+install(DIRECTORY config/
+  DESTINATION share/${PROJECT_NAME}
+)
+
 ament_package()

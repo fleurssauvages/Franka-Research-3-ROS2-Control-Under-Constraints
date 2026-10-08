@@ -26,9 +26,6 @@ struct SurfacePlane {
 std::vector<std::string> deriveJointNames(const std::string& robot_type,
                                           const std::string& arm_prefix);
 std::string deriveRootLink(const std::string& robot_type, const std::string& arm_prefix);
-std::string deriveTipLink(const std::string& robot_type, const std::string& arm_prefix,
-                          const std::string& requested_tip);
-
 bool extractJointState(const sensor_msgs::msg::JointState& msg,
                        const std::vector<std::string>& joint_names,
                        Vector7d& q, Vector7d& dq);

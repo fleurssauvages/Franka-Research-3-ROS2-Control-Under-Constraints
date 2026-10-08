@@ -21,12 +21,14 @@ QpVelocityNode::QpVelocityNode() : Node("qp_velocity_controller") {
   robot_type_ = declare_parameter<std::string>("robot_type", "fr3");
   arm_prefix_ = declare_parameter<std::string>("arm_prefix", "");
   root_link_ = declare_parameter<std::string>("root_link", "");
-  tip_link_ = declare_parameter<std::string>("tip_link", "");
+  tip_link_ = declare_parameter<std::string>("tip_link", "auto");
+  declare_parameter<bool>("load_gripper", false);  // Bringup compatibility; URDF decides the tip.
   const auto default_joint_names = deriveJointNames(robot_type_, arm_prefix_);
   joint_names_ = declare_parameter<std::vector<std::string>>("joint_names", default_joint_names);
   if (joint_names_.size() != 7) throw std::runtime_error("joint_names must contain 7 entries");
   if (root_link_.empty()) root_link_ = deriveRootLink(robot_type_, arm_prefix_);
-  tip_link_ = deriveTipLink(robot_type_, arm_prefix_, tip_link_);
+  // tip_link=auto is resolved from the received /robot_description.
+  RCLCPP_INFO(get_logger(), "URDF_TIP_AUTO_V7: requested tip_link=\"%s\"", tip_link_.c_str());
 
   frequency_ = declare_parameter<double>("frequency", 200.0);
   command_timeout_ = declare_parameter<double>("command_timeout", 0.1);
@@ -63,7 +65,7 @@ QpVelocityNode::QpVelocityNode() : Node("qp_velocity_controller") {
   const auto surface_names = declare_parameter<std::vector<std::string>>("surfaces.names", {"table"});
   const auto surface_normals = declare_parameter<std::vector<double>>("surfaces.normals", {0.0,0.0,1.0});
   const auto surface_offsets = declare_parameter<std::vector<double>>("surfaces.offsets", {0.0});
-  const auto surface_margins = declare_parameter<std::vector<double>>("surfaces.margins", {0.08});
+  const auto surface_margins = declare_parameter<std::vector<double>>("surfaces.margins", {0.01});
   const auto surface_gains = declare_parameter<std::vector<double>>("surfaces.gains", {2.0});
   surface_repulsion_gains_ = declare_parameter<std::vector<double>>("surfaces.repulsion_gains", {3.0});
   surface_repulsion_weights_ = declare_parameter<std::vector<double>>("surfaces.repulsion_weights", {3.0});
@@ -122,18 +124,21 @@ QpVelocityNode::QpVelocityNode() : Node("qp_velocity_controller") {
   timer_ = create_wall_timer(std::chrono::duration<double>(1.0 / frequency_),
                              std::bind(&QpVelocityNode::update, this));
   RCLCPP_INFO(get_logger(), "QP velocity controller: %s -> %s, %zu surface constraints, %.1f Hz",
-              root_link_.c_str(), tip_link_.c_str(), surface_planes_.size(), frequency_);
+              root_link_.c_str(), (tip_link_ == "auto" ? "<auto from URDF>" : tip_link_.c_str()),
+              surface_planes_.size(), frequency_);
 }
 
 void QpVelocityNode::robotDescriptionCallback(const std_msgs::msg::String::SharedPtr msg) {
   if (kinematics_ready_) return;
   std::string error;
-  if (!kinematics_.initialize(msg->data, root_link_, tip_link_, &error)) {
+  if (!kinematics_.initializeFromRobotDescriptionV7(msg->data, root_link_, tip_link_, &error)) {
     RCLCPP_ERROR_THROTTLE(get_logger(), *get_clock(), 2000, "%s", error.c_str());
     return;
   }
+  tip_link_ = kinematics_.tipLink();
   kinematics_ready_ = true;
-  RCLCPP_INFO(get_logger(), "Kinematics initialized from /robot_description");
+  RCLCPP_INFO(get_logger(), "FR3_KINEMATICS_V7: initialized from /robot_description: %s -> %s",
+              root_link_.c_str(), tip_link_.c_str());
 }
 
 void QpVelocityNode::jointStateCallback(const sensor_msgs::msg::JointState::SharedPtr msg) {

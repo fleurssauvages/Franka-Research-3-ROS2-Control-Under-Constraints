@@ -75,10 +75,7 @@ def _setup(context):
     load_gripper = _as_bool(LaunchConfiguration('load_gripper').perform(context))
     expanded_robot_prefix = (f'{arm_prefix}_' if arm_prefix else '') + robot_type
     requested_qp_tip_link = LaunchConfiguration('qp_tip_link').perform(context).strip()
-    qp_tip_link = requested_qp_tip_link or (
-        f'{expanded_robot_prefix}_hand_tcp' if load_gripper
-        else f'{expanded_robot_prefix}_link8'
-    )
+    qp_tip_link = requested_qp_tip_link or "auto"  # Resolve tip from /robot_description
 
     low_level_launch = os.path.join(
         get_package_share_directory('low_level'), 'launch', 'control.launch.py'
@@ -304,10 +301,9 @@ def generate_launch_description():
         DeclareLaunchArgument('namespace', default_value=''),
         DeclareLaunchArgument('load_gripper', default_value='false'),
         DeclareLaunchArgument(
-            'qp_tip_link', default_value='',
+            'qp_tip_link', default_value='auto',
             description=(
-                'QP tip link. Empty selects <robot>_hand_tcp when load_gripper=true, '
-                'otherwise <robot>_link8.'
+                'QP TCP frame. auto resolves the tip from the loaded /robot_description.'
             ),
         ),
         DeclareLaunchArgument('joint_state_rate', default_value='250'),

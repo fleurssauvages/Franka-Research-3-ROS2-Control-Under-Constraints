@@ -7,7 +7,8 @@
     robot_type: fr3
     arm_prefix: ""
     root_link: ""       # Empty => derived as <prefix><robot_type>_link0
-    tip_link: ""        # Empty => derived as <prefix><robot_type>_hand_tcp
+    load_gripper: false # Bringup setting; KDL tip is selected from /robot_description
+    tip_link: "auto"    # Resolve TCP/EE from /robot_description; explicit link also supported
 
     robot_description_topic: /robot_description
     joint_state_topic: /franka/joint_states
@@ -42,7 +43,7 @@
     surfaces.names: [table]
     surfaces.normals: [0.0, 0.0, 1.0]
     surfaces.offsets: [0.0]
-    surfaces.margins: [0.08]
+    surfaces.margins: [0.01]
     surfaces.gains: [2.0]
 
     # Soft surface recovery is exactly zero while the TCP is on the valid side.
