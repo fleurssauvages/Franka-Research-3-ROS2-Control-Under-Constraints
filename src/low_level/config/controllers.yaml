@@ -1,0 +1,73 @@
+# Static defaults. control.launch.py writes the same structure to a runtime file
+# with launch-argument overrides.
+/**:
+  controller_manager:
+    ros__parameters:
+      update_rate: 1000
+      thread_priority: 95
+      joint_state_broadcaster:
+        type: joint_state_broadcaster/JointStateBroadcaster
+      franka_robot_state_broadcaster:
+        type: franka_robot_state_broadcaster/FrankaRobotStateBroadcaster
+      low_level_joint_velocity_controller:
+        type: low_level/JointVelocityController
+      low_level_joint_impedance_controller:
+        type: low_level/JointImpedanceController
+      dynamics_observer_controller:
+        type: low_level/DynamicsObserverController
+
+  low_level_joint_velocity_controller:
+    ros__parameters:
+      robot_type: fr3
+      arm_prefix: ""
+      command_topic: /fr3/joint_commands
+      command_timeout: 0.1
+      velocity_scale: 1.0
+      max_velocity: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+      tracking_time_constant: 0.03
+      max_acceleration: [2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0]
+      max_jerk: [100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0]
+      controller_version: "velocity_tracker_v5"
+
+  low_level_joint_impedance_controller:
+    ros__parameters:
+      robot_type: fr3
+      arm_prefix: ""
+      command_topic: /fr3/joint_commands
+      command_timeout: 0.1
+      stiffness: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+      damping: [1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5]
+      mass_damping: [3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0]
+      effort_feedforward_scale: 1.0
+      delta_tau_max: 1.0
+      max_torque: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+      hold_position_on_timeout: false
+      friction_compensation_enabled: true
+      friction_calibration_valid: false
+      friction_calibration_source: ""
+      friction_calibration_age_hours: -1.0
+      friction_compensation_scale: 0.3
+      friction_smoothing_velocity: 0.01
+      # Stribeck is the default model, but no compensation applies until a fresh
+      # validated schema-v4 calibration is loaded by control.launch.py.
+      friction_stribeck_enabled: true
+      friction_stribeck_velocity_per_joint: [0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05]
+      friction_static: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+      friction_max_compensation_torque: [0.75, 0.75, 0.75, 0.75, 0.75, 0.75, 0.75]
+      # Validation metadata only: no speed-based gating/clipping at runtime.
+      friction_validated_velocity_min: 0.02
+      friction_validated_velocity_min_per_joint: [0.02, 0.02, 0.02, 0.02, 0.02, 0.02, 0.02]
+      # Legacy scalar kept for compatibility; the controller uses the per-joint array below.
+      friction_validated_velocity_max: 0.25
+      friction_validated_velocity_max_per_joint: [0.25, 0.25, 0.25, 0.25, 0.25, 0.25, 0.25]
+      friction_joint_enable: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+      friction_coulomb: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+      friction_viscous: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+
+  dynamics_observer_controller:
+    ros__parameters:
+      robot_type: fr3
+      arm_prefix: ""
+      observation_topic: /fr3/dynamics_observation
+      publish_rate: 200.0
+      acceleration_filter_tau: 0.03

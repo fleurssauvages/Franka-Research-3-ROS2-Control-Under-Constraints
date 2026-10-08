@@ -1,0 +1,22 @@
+<?xml version="1.0"?>
+<library path="low_level_controllers">
+  <class
+    name="low_level/JointVelocityController"
+    type="low_level::JointVelocityController"
+    base_class_type="controller_interface::ControllerInterface">
+    <description>Receives sensor_msgs/JointState velocity commands and writes Franka joint velocity interfaces.</description>
+  </class>
+  <class
+    name="low_level/JointImpedanceController"
+    type="low_level::JointImpedanceController"
+    base_class_type="controller_interface::ControllerInterface">
+    <description>Parameterized joint impedance / velocity tracking controller using Franka effort interfaces.</description>
+  </class>
+
+  <class
+    name="low_level/DynamicsObserverController"
+    type="low_level::DynamicsObserverController"
+    base_class_type="controller_interface::ControllerInterface">
+    <description>Read-only Franka dynamics observer publishing q, dq, estimated ddq, measured torque, M*ddq, coriolis, gravity, residual torque, and the mass matrix.</description>
+  </class>
+</library>

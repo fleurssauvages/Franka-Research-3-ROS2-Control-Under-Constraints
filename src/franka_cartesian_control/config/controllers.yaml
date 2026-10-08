@@ -1,0 +1,82 @@
+/**:
+  ros__parameters:
+    # High-level loop. Position/cartesian launch defaults to low_level velocity control so the predictive/kinematic layer owns motion dynamics.
+    frequency: 200.0
+    command_timeout: 0.10
+
+    robot_type: fr3
+    arm_prefix: ""
+    root_link: ""       # Empty => derived as <prefix><robot_type>_link0
+    tip_link: ""        # Empty => derived as <prefix><robot_type>_hand_tcp
+
+    robot_description_topic: /robot_description
+    joint_state_topic: /franka/joint_states
+    twist_topic: /fr3/cartesian_twist_command
+    joint_command_topic: /fr3/joint_commands
+
+    # Conservative software limits for the high-level controller.
+    # These are intentionally below the FR3 hardware maxima.
+    max_velocity: [1.0, 1.0, 1.0, 1.0, 1.5, 1.5, 1.5]
+    max_acceleration: [1.50, 1.50, 1.50, 1.50, 1.50, 1.50, 1.50]
+
+    # FR3 joint limits. Keep a safety margin inside these values.
+    joint_min: [-2.9007, -1.8361, -2.9007, -3.0770, -2.8763, 0.4398, -3.0508]
+    joint_max: [ 2.9007,  1.8361,  2.9007, -0.1169,  2.8763, 4.6216,  3.0508]
+    joint_limit_margin: 0.08
+    joint_limit_gain: 2.0
+
+    # Soft joint recovery is inactive inside the safe range. It activates only
+    # after q < joint_min + margin or q > joint_max - margin.
+    joint_repulsion_gain: 2.0
+    joint_repulsion_weight: 0.50
+    max_joint_repulsion_velocity: 0.35
+    # Recovery still activates only after crossing the safe limit, but once active
+    # it stays on until the joint has returned this far inside the valid region.
+    joint_recovery_release_margin: 0.03
+
+    # Half-space constraints use: normal.dot(tcp_position) >= offset + margin.
+    # Table example: z >= 0.0 + 0.08.
+    # Add more planes by appending one name, 3 normal values, one offset,
+    # one margin and one gain for each plane.
+    enforce_surfaces: true
+    surfaces.names: [table]
+    surfaces.normals: [0.0, 0.0, 1.0]
+    surfaces.offsets: [0.0]
+    surfaces.margins: [0.08]
+    surfaces.gains: [2.0]
+
+    # Soft surface recovery is exactly zero while the TCP is on the valid side.
+    # It activates only after normal.dot(p) < offset + margin.
+    surfaces.repulsion_gains: [3.0]
+    surfaces.repulsion_weights: [2.0]
+    surfaces.max_repulsion_velocities: [0.05]
+    # No pre-contact repulsion: this hysteresis distance is used only AFTER a
+    # violation has activated recovery, to carry the TCP back inside smoothly.
+    surfaces.release_distances: [0.015]
+
+ik_velocity_controller:
+  ros__parameters:
+    pinv_damping: 0.02
+    nullspace_gain: 0.0
+    nullspace_target: [0.0, 0.0, 0.0, -1.5708, 0.0, 1.5708, 0.7854]
+
+qp_velocity_controller:
+  ros__parameters:
+    # Cost: ||W(J qdot - xdot_des)||^2 + posture + regularization.
+    task_weights: [1.0, 1.0, 1.0, 0.30, 0.30, 0.30]
+    regularization: 0.0001
+    # Damping used only to build the nullspace projector N = I - J#J.
+    pinv_damping: 0.02
+    posture_weight: 0.02
+    posture_gain: 0.50
+    posture_target: [0.0, 0.0, 0.0, -1.5708, 0.0, 1.5708, 0.7854]
+    max_working_set_recalculations: 100
+    # When true, QP wakes up without a Cartesian command only if a joint/surface
+    # boundary is actually violated, then publishes minimum-norm recovery motion.
+    repulsion_when_idle: true
+    # Idle surface FK checks are throttled to reduce CPU load on the 1 kHz RT host.
+    idle_safety_frequency: 50.0
+    # First-order smoothing for idle recovery commands. On release, dq_des is
+    # blended toward measured dq before publishing stops, avoiding a torque jump.
+    recovery_command_time_constant: 0.12
+    recovery_release_tolerance: 0.01

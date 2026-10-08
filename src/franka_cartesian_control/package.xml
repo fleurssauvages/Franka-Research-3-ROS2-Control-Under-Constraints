@@ -1,0 +1,25 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>franka_cartesian_control</name>
+  <version>0.1.0</version>
+  <description>ROS 2 Cartesian IK/QP velocity and PID/LMPC position controllers for Franka Research 3.</description>
+  <maintainer email="maintainer@example.com">Maintainer</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>rclcpp</depend>
+  <depend>sensor_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>std_msgs</depend>
+  <depend>visualization_msgs</depend>
+  <depend>kdl_parser</depend>
+  <depend>orocos_kdl</depend>
+  <depend>eigen</depend>
+  <exec_depend>low_level</exec_depend>
+  <exec_depend>ament_index_python</exec_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

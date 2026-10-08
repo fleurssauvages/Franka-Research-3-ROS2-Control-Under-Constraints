@@ -1,0 +1,3 @@
+[submodule "src/qpoases"]
+	path = src/qpoases
+	url = https://github.com/coin-or/qpOASES.git

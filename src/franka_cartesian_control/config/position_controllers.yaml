@@ -1,0 +1,70 @@
+/**:
+  ros__parameters:
+    robot_type: fr3
+    arm_prefix: ""
+    root_link: ""
+    tip_link: ""
+
+    robot_description_topic: /robot_description
+    joint_state_topic: /franka/joint_states
+    desired_pose_topic: /fr3/cartesian_pose_command
+    twist_topic: /fr3/cartesian_twist_command
+    current_pose_topic: /fr3/cartesian_pose
+
+    # These defaults match position_control.launch.py.
+    frequency: 50.0
+    command_timeout: 0.50
+
+pid_position_controller:
+  ros__parameters:
+    kp: [5.0, 5.0, 5.0, 5.0, 5.0, 5.0]
+    ki: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    kd: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    integral_limit: [0.20, 0.20, 0.20, 0.20, 0.20, 0.20]
+    max_twist: [0.50, 0.50, 0.50, 0.20, 0.20, 0.20]
+    reset_integral_on_new_target: true
+
+lmpc_position_controller:
+  ros__parameters:
+    # First-order Cartesian velocity-tracking model. The decision variable is
+    # desired TCP twist u sent to the downstream QP/IK:
+    #   v[k+1] = alpha*v[k] + (1-alpha)*u[k]
+    #   alpha = exp(-dt / velocity_tracking_time_constant)
+    # Pose error is integrated from the predicted actual velocity.
+    horizon: 25
+    velocity_tracking_time_constant: 0.08
+
+    state_weights: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+    terminal_weights: [30.0, 30.0, 30.0, 20.0, 20.0, 20.0]
+
+    # Penalize residual motion throughout the horizon and strongly at the
+    # terminal state so the optimizer plans to arrive at the goal stopped.
+    velocity_weights: [1.0, 1.0, 1.0, 0.50, 0.50, 0.50]
+    terminal_velocity_weights: [50.0, 50.0, 50.0, 20.0, 20.0, 20.0]
+
+    # regularization_gain is a uniform penalty on desired Cartesian twist.
+    # delta_twist_weight penalizes u[k]-u[k-1]. max_acceleration is now the
+    # hard full-horizon slew-rate limit on the desired twist command.
+    regularization_gain: 0.01
+    delta_twist_weight: 0.5
+    input_weights: [0.01, 0.01, 0.01, 0.01, 0.01, 0.01]
+    max_twist: [0.50, 0.50, 0.50, 0.20, 0.20, 0.20]
+    max_acceleration: [2.0, 2.0, 2.0, 4.0, 4.0, 4.0]
+    max_working_set_recalculations: 100
+
+    obstacle_mesh_topic: /fr3/lmpc_obstacle_mesh
+    obstacles.enabled: true
+    obstacles.safety_distance: 0.05
+    obstacles.influence_distance: 0.15
+    obstacles.barrier_gain: 3.0
+    obstacles.max_active_meshes: 16
+
+    # The built-in table is one-sided: +Z is always the allowed side. This uses
+    # signed distance, so crossing below the plane still commands +Z recovery.
+    obstacles.default_table.enabled: true
+    obstacles.default_table.id: 0
+    obstacles.default_table.z: 0.0
+    obstacles.default_table.x_min: -1.0
+    obstacles.default_table.x_max: 1.0
+    obstacles.default_table.y_min: -1.0
+    obstacles.default_table.y_max: 1.0
