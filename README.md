@@ -9,7 +9,7 @@ ROS 2 Jazzy control stack for a **Franka Research 3 (FR3)** with:
 
 - Cartesian inverse-kinematics velocity control,
 
-- constrained Cartesian QP velocity control with proactive FCL capsule self-collision avoidance,
+- constrained Cartesian QP velocity control,
 
 - Cartesian PID position control,
 
@@ -19,7 +19,7 @@ ROS 2 Jazzy control stack for a **Franka Research 3 (FR3)** with:
 
 - dynamics observation and friction identification,
 
-- config-driven UDP <-> ROS 2 bridging with Wireshark dissector generation,
+- config-driven UDP <-> ROS 2 bridging for external commands
 
 - readiness-driven startup instead of fixed launch delays.
 
@@ -31,10 +31,9 @@ low_level/
     collision configuration, dynamics observation and calibration.
 franka_cartesian_control/
     Cartesian IK/QP velocity controllers and PID/LMPC position controllers.
-    The QP includes optional FCL capsule self-collision constraints.
 udp_bridge/
     Generic JSON-configured UDP -> ROS 2 and ROS 2 -> UDP bridge for common
-    standard ROS message packages, plus Wireshark Lua dissector generation.
+    standard ROS message packages
 ```
 
 The default robot type is `fr3` and the default robot IP used by the launch files is:
@@ -160,21 +159,6 @@ Before enabling motion:
 
 7. Start with conservative velocity, acceleration and torque limits.
 
-### QP self-collision safety
-The QP now includes proactive self-collision avoidance.  It uses the Flexible Collision Library (FCL) with conservative capsule proxies connecting successive FR3 link-frame origins.  Non-neighbouring capsule pairs become hard control-barrier inequalities in the joint-velocity QP.
-
-The constraint is conceptually:
-
-```text
-d_dot >= -gain * (d - margin)
-```
-
-where `d` is the current FCL capsule surface-to-surface clearance.  At the configured margin the pair may not move closer; inside the margin the QP requests separating velocity, subject to the current joint velocity and acceleration bounds.
-
-This is intentionally much lighter than MoveIt collision checking, but it is an ****approximation****, not an exact mesh guarantee.  The current proxy covers the arm through `link8`; it does not model gripper fingers or arbitrary attached tools as exact meshes.  Validate the configured capsule radii and margin for the real hardware and installed end effector.
-
-Franka's internal collision/reflex system remains the final hardware protection layer.
-
 ### Collision thresholds
 The low-level launch can optionally call Franka's full collision-behavior service before activating the command controller. This is disabled by default:
 
@@ -206,7 +190,6 @@ The examples in this README assume:
         udp/
             udp_reader.json
             udp_publisher.json
-            wireshark_udp.lua     # generated example/decoder
     build/
     install/
 ```
@@ -290,7 +273,7 @@ ros2 pkg prefix franka_bringup
 ---
 
 ## 4.3 Install additional system dependencies
-The low-level calibration scripts use NumPy, SciPy and YAML. The QP self-collision layer uses FCL. Wireshark is optional but useful for inspecting UDP traffic:
+The low-level calibration scripts use NumPy, SciPy and YAML:
 
 ```bash
 sudo apt install \
@@ -300,8 +283,6 @@ sudo apt install \
   python3-numpy \
   python3-scipy \
   python3-yaml \
-  libfcl-dev \
-  wireshark
 ```
 
 ROS package dependencies can also be resolved with `rosdep` after placing the custom packages in the workspace.
@@ -755,41 +736,6 @@ z >= 0.08 m
 ```
 
 The QP includes soft recovery behavior after a configured joint or surface boundary is violated. `repulsion_when_idle:=true` allows recovery to wake the QP without an external twist command after a joint/surface violation or when a self-collision capsule pair has moved inside its safety margin.
-
-### QP self-collision constraints
-Self-collision avoidance is enabled by default for the QP:
-
-```text
-self_collision_enabled = true
-self_collision_margin = 0.035 m
-self_collision_gain = 3.0 1/s
-self_collision_release_distance = 0.015 m
-self_collision_minimum_segment_gap = 2
-self_collision_segment_radii = [0.10,0.09,0.09,0.085,0.08,0.075,0.07,0.07] m
-```
-
-The eight FCL capsules connect:
-
-```text
-link0-link1
-link1-link2
-...
-link7-link8
-```
-
-Pairs separated by `minimum_segment_gap` or fewer center-line segments are ignored so ordinary neighbouring-link geometry does not constrain the QP. Every remaining pair contributes a hard velocity inequality based on its current capsule clearance and distance Jacobian.
-
-Disable the feature for debugging:
-
-```bash
-ros2 launch franka_cartesian_control cartesian_control.launch.py \
-  controller:=qp \
-  self_collision_enabled:=false
-```
-
-Increase `self_collision_margin` for more conservative separation.  Do not reduce the margin or capsule radii merely to make a previously infeasible pose reachable without first checking the physical geometry.
-
-The capsule model is deliberately simple. It protects against the common arm-folding self-collision modes without requiring MoveIt, but it is not an exact collision model for the hand, fingers, payload or arbitrary tools.
 
 ---
 
@@ -1706,14 +1652,6 @@ Official Franka resources:
 qpOASES:
 
 - https://github.com/coin-or/qpOASES
-
-FCL and Wireshark:
-
-- https://github.com/flexible-collision-library/fcl
-
-- https://www.wireshark.org/docs/wsug_html/
-
-- https://www.wireshark.org/docs/wsdg_html_chunked/wsluarm_modules.html
 
 For torque-sensor calibration, always follow the operating manual corresponding to the System Image installed on the robot. The exact Desk labels can change between system-image versions.
 
