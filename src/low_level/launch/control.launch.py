@@ -156,7 +156,7 @@ def _resolve_friction_calibration(context, robot_type, arm_prefix, mode):
         "source": "",
         "age_hours": -1.0,
         "scale": float(LaunchConfiguration("friction_compensation_scale").perform(context)),
-        "smoothing": 0.01,
+        "smoothing": 0.001,
         "velocity_min": [0.02] * 7,
         "velocity_max": [0.25] * 7,
         "enable": zeros.copy(),
@@ -287,6 +287,45 @@ def _setup(context):
     delta_tau_max = float(LaunchConfiguration("delta_tau_max").perform(context))
     hold_on_timeout = _as_bool(LaunchConfiguration("hold_position_on_timeout").perform(context))
     friction = _resolve_friction_calibration(context, robot_type, arm_prefix, mode)
+    breakaway_enabled = (
+        mode == "impedance"
+        and _as_bool(
+            LaunchConfiguration("breakaway_enabled").perform(context)
+        )
+    )
+    breakaway_values = {name: float(LaunchConfiguration(name).perform(context)) for name in (
+        "breakaway_velocity_epsilon", "breakaway_external_torque_deadband",
+        "breakaway_gain", "breakaway_max_torque", "breakaway_slew_rate")}
+    if any(not math.isfinite(v) for v in breakaway_values.values()):
+        raise RuntimeError("breakaway parameters must be finite")
+    residual_enabled = (
+        mode == "impedance"
+        and _as_bool(
+            LaunchConfiguration("gravity_error_compensation_enabled").perform(context)
+        )
+    )
+    residual_args = {
+        "calibration_lease_s": "gravity_error_calibration_lease_s",
+        "command_velocity_epsilon": "gravity_error_command_velocity_epsilon",
+        "measured_velocity_epsilon": "gravity_error_measured_velocity_epsilon",
+        "stationary_dwell_s": "gravity_error_stationary_dwell_s",
+        "minimum_sample_s": "gravity_error_minimum_sample_s",
+        "filter_tau_s": "gravity_error_filter_tau_s",
+        "sampling_command_torque_epsilon": "gravity_error_sampling_command_torque_epsilon",
+        "sample_deviation_limit": "gravity_error_sample_deviation_limit",
+        "output_slew_rate": "gravity_error_output_slew_rate",
+        "pose_radius": "gravity_error_pose_radius",
+        "pose_fade_width": "gravity_error_pose_fade_width",
+    }
+    residual_values = {
+        key: float(LaunchConfiguration(arg).perform(context))
+        for key, arg in residual_args.items()
+    }
+    residual_limits = _array7(LaunchConfiguration("gravity_error_max_torque").perform(context), "gravity_error_max_torque")
+    if any(not math.isfinite(x) or x <= 0.0 for x in residual_limits):
+        raise RuntimeError("gravity_error_max_torque must be seven positive finite numbers")
+    if any(not math.isfinite(x) for x in residual_values.values()):
+        raise RuntimeError("residual calibration parameters must be finite")
     stribeck_enabled = _as_bool(LaunchConfiguration("friction_stribeck_enabled").perform(context))
     friction_limits = _array7(
         LaunchConfiguration("friction_max_compensation_torque").perform(context),
@@ -336,6 +375,8 @@ def _setup(context):
     # Franka mock hardware does not export the robot model semantic interface.
     if use_fake_hardware:
         mass_damping = [0.0] * 7
+        if residual_enabled or breakaway_enabled:
+            raise RuntimeError("gravity_error_compensation_enabled requires real Franka model and measured torque interfaces")
 
     runtime_yaml = os.path.join(tempfile.gettempdir(), f"low_level_controllers_{os.getpid()}.yaml")
     with open(runtime_yaml, "w", encoding="utf-8") as f:
@@ -381,6 +422,25 @@ def _setup(context):
       delta_tau_max: {delta_tau_max}
       max_torque: {_yaml_array(max_torque)}
       hold_position_on_timeout: {str(hold_on_timeout).lower()}
+      breakaway_enabled: {str(breakaway_enabled).lower()}
+      breakaway_velocity_epsilon: {breakaway_values['breakaway_velocity_epsilon']}
+      breakaway_external_torque_deadband: {breakaway_values['breakaway_external_torque_deadband']}
+      breakaway_gain: {breakaway_values['breakaway_gain']}
+      breakaway_max_torque: {breakaway_values['breakaway_max_torque']}
+      breakaway_slew_rate: {breakaway_values['breakaway_slew_rate']}
+      gravity_error_compensation_enabled: {str(residual_enabled).lower()}
+      gravity_error_calibration_lease_s: {residual_values['calibration_lease_s']}
+      gravity_error_command_velocity_epsilon: {residual_values['command_velocity_epsilon']}
+      gravity_error_measured_velocity_epsilon: {residual_values['measured_velocity_epsilon']}
+      gravity_error_stationary_dwell_s: {residual_values['stationary_dwell_s']}
+      gravity_error_minimum_sample_s: {residual_values['minimum_sample_s']}
+      gravity_error_filter_tau_s: {residual_values['filter_tau_s']}
+      gravity_error_sampling_command_torque_epsilon: {residual_values['sampling_command_torque_epsilon']}
+      gravity_error_sample_deviation_limit: {residual_values['sample_deviation_limit']}
+      gravity_error_output_slew_rate: {residual_values['output_slew_rate']}
+      gravity_error_pose_radius: {residual_values['pose_radius']}
+      gravity_error_pose_fade_width: {residual_values['pose_fade_width']}
+      gravity_error_max_torque: {_yaml_array(residual_limits)}
       friction_compensation_enabled: {str(bool(friction["requested"])).lower()}
       friction_calibration_valid: {str(bool(friction["valid"])).lower()}
       friction_calibration_source: {json.dumps(str(friction["source"]))}
@@ -571,6 +631,27 @@ def generate_launch_description():
         DeclareLaunchArgument("delta_tau_max", default_value="1.0"),
         DeclareLaunchArgument("max_torque", default_value="[0.0,0.0,0.0,0.0,0.0,0.0,0.0]"),
         DeclareLaunchArgument("hold_position_on_timeout", default_value="false"),
+        DeclareLaunchArgument("breakaway_enabled", default_value="true",
+                              description="Experimental low-speed positive assistance, OFF by default."),
+        DeclareLaunchArgument("breakaway_velocity_epsilon", default_value="0.001"),
+        DeclareLaunchArgument("breakaway_external_torque_deadband", default_value="0.6"),
+        DeclareLaunchArgument("breakaway_gain", default_value="1.0"),
+        DeclareLaunchArgument("breakaway_max_torque", default_value="8.0"),
+        DeclareLaunchArgument("breakaway_slew_rate", default_value="0.10"),
+        DeclareLaunchArgument("gravity_error_compensation_enabled", default_value="true",
+                              description="Experimental unloaded calibration and bounded local torque correction; disabled by default."),
+        DeclareLaunchArgument("gravity_error_calibration_lease_s", default_value="0.35"),
+        DeclareLaunchArgument("gravity_error_command_velocity_epsilon", default_value="0.002"),
+        DeclareLaunchArgument("gravity_error_measured_velocity_epsilon", default_value="0.003"),
+        DeclareLaunchArgument("gravity_error_stationary_dwell_s", default_value="0.5"),
+        DeclareLaunchArgument("gravity_error_minimum_sample_s", default_value="1.0"),
+        DeclareLaunchArgument("gravity_error_filter_tau_s", default_value="2.0"),
+        DeclareLaunchArgument("gravity_error_sampling_command_torque_epsilon", default_value="0.03"),
+        DeclareLaunchArgument("gravity_error_sample_deviation_limit", default_value="0.10"),
+        DeclareLaunchArgument("gravity_error_output_slew_rate", default_value="0.10"),
+        DeclareLaunchArgument("gravity_error_pose_radius", default_value="0.25"),
+        DeclareLaunchArgument("gravity_error_pose_fade_width", default_value="0.25"),
+        DeclareLaunchArgument("gravity_error_max_torque", default_value="[8.0,8.0,8.0,8.0,8.0,8.0,8.0]"),
         DeclareLaunchArgument(
             "friction_compensation_enabled", default_value="true",
             description="Enable calibrated friction feedforward in impedance mode when a fresh calibration is available.",
@@ -623,11 +704,11 @@ def generate_launch_description():
             description="Low-level 1 kHz tracking jerk limits [rad/s^3]",
         ),
 
-        DeclareLaunchArgument("configure_collision_behavior", default_value="false"),
+        DeclareLaunchArgument("configure_collision_behavior", default_value="true"),
         DeclareLaunchArgument("collision_service_name", default_value="/service_server/set_full_collision_behavior"),
         DeclareLaunchArgument("collision_service_timeout", default_value="15.0"),
-        DeclareLaunchArgument("collision_torque_scale", default_value="1.0"),
-        DeclareLaunchArgument("collision_force_scale", default_value="1.0"),
+        DeclareLaunchArgument("collision_torque_scale", default_value="2.0"),
+        DeclareLaunchArgument("collision_force_scale", default_value="2.0"),
         DeclareLaunchArgument("lower_torque_thresholds_acceleration", default_value=default_joint_collision),
         DeclareLaunchArgument("upper_torque_thresholds_acceleration", default_value=default_joint_collision),
         DeclareLaunchArgument("lower_torque_thresholds_nominal", default_value=default_joint_collision),

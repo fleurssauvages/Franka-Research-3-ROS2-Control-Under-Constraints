@@ -51,8 +51,11 @@ JointImpedanceController::state_interface_configuration() const {
   for (const auto& joint : joint_names_) {
     config.names.push_back(joint + "/" + hardware_interface::HW_IF_POSITION);
     config.names.push_back(joint + "/" + hardware_interface::HW_IF_VELOCITY);
+    if (gravity_error_compensation_enabled_ || breakaway_enabled_) {
+      config.names.push_back(joint + "/" + hardware_interface::HW_IF_EFFORT);
+    }
   }
-  if (use_mass_damping_ && franka_robot_model_) {
+  if ((use_mass_damping_ || gravity_error_compensation_enabled_ || breakaway_enabled_) && franka_robot_model_) {
     const auto model_interfaces = franka_robot_model_->get_state_interface_names();
     config.names.insert(config.names.end(), model_interfaces.begin(), model_interfaces.end());
   }
@@ -67,13 +70,34 @@ JointImpedanceController::CallbackReturn JointImpedanceController::on_init() {
     auto_declare<std::string>("command_topic", "joint_commands");
     auto_declare<double>("command_timeout", 0.01);
     auto_declare<std::vector<double>>("stiffness", std::vector<double>(kNumJoints, 0.0));
-    auto_declare<std::vector<double>>("damping", {1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5});
-    auto_declare<std::vector<double>>("mass_damping", {3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0});
+    auto_declare<std::vector<double>>("damping", std::vector<double>(kNumJoints, 0.0));
+    auto_declare<std::vector<double>>("mass_damping", std::vector<double>(kNumJoints, 0.0));
     auto_declare<double>("effort_feedforward_scale", 1.0);
     auto_declare<double>("delta_tau_max", 1.0);
     auto_declare<std::vector<double>>("max_torque", std::vector<double>(kNumJoints, 0.0));
     auto_declare<bool>("hold_position_on_timeout", false);
 
+    auto_declare<bool>("gravity_error_compensation_enabled", false);
+    auto_declare<double>("gravity_error_calibration_lease_s", 0.35);
+    auto_declare<double>("gravity_error_command_velocity_epsilon", 0.002);
+    auto_declare<double>("gravity_error_measured_velocity_epsilon", 0.003);
+    auto_declare<double>("gravity_error_stationary_dwell_s", 0.5);
+    auto_declare<double>("gravity_error_minimum_sample_s", 1.0);
+    auto_declare<double>("gravity_error_filter_tau_s", 2.0);
+    auto_declare<double>("gravity_error_sampling_command_torque_epsilon", 0.03);
+    auto_declare<double>("gravity_error_sample_deviation_limit", 0.10);
+    auto_declare<double>("gravity_error_output_slew_rate", 0.10);
+    auto_declare<double>("gravity_error_pose_radius", 0.25);
+    auto_declare<double>("gravity_error_pose_fade_width", 0.25);
+    auto_declare<std::vector<double>>(
+        "gravity_error_max_torque", std::vector<double>(kNumJoints, 0.15));
+
+    auto_declare<bool>("breakaway_enabled", false);
+    auto_declare<double>("breakaway_velocity_epsilon", 0.004);
+    auto_declare<double>("breakaway_external_torque_deadband", 0.6);
+    auto_declare<double>("breakaway_gain", 0.10);
+    auto_declare<double>("breakaway_max_torque", 0.08);
+    auto_declare<double>("breakaway_slew_rate", 0.10);
     auto_declare<bool>("friction_compensation_enabled", true);
     auto_declare<bool>("friction_calibration_valid", false);
     auto_declare<std::string>("friction_calibration_source", "");
@@ -114,7 +138,46 @@ JointImpedanceController::CallbackReturn JointImpedanceController::on_configure(
   effort_feedforward_scale_ = get_node()->get_parameter("effort_feedforward_scale").as_double();
   delta_tau_max_ = get_node()->get_parameter("delta_tau_max").as_double();
   hold_position_on_timeout_ = get_node()->get_parameter("hold_position_on_timeout").as_bool();
+  gravity_error_compensation_enabled_ =
+      get_node()->get_parameter("gravity_error_compensation_enabled").as_bool();
+  gravity_error_calibration_lease_s_ =
+      get_node()->get_parameter("gravity_error_calibration_lease_s").as_double();
+  residual_settings_.command_velocity_epsilon =
+      get_node()->get_parameter("gravity_error_command_velocity_epsilon").as_double();
+  residual_settings_.measured_velocity_epsilon =
+      get_node()->get_parameter("gravity_error_measured_velocity_epsilon").as_double();
+  residual_settings_.stationary_dwell_s =
+      get_node()->get_parameter("gravity_error_stationary_dwell_s").as_double();
+  residual_settings_.minimum_sample_s =
+      get_node()->get_parameter("gravity_error_minimum_sample_s").as_double();
+  residual_settings_.filter_tau_s =
+      get_node()->get_parameter("gravity_error_filter_tau_s").as_double();
+  residual_settings_.sampling_command_torque_epsilon =
+      get_node()->get_parameter("gravity_error_sampling_command_torque_epsilon").as_double();
+  residual_settings_.sample_deviation_limit =
+      get_node()->get_parameter("gravity_error_sample_deviation_limit").as_double();
+  residual_settings_.output_slew_rate =
+      get_node()->get_parameter("gravity_error_output_slew_rate").as_double();
+  residual_settings_.pose_radius =
+      get_node()->get_parameter("gravity_error_pose_radius").as_double();
+  residual_settings_.pose_fade_width =
+      get_node()->get_parameter("gravity_error_pose_fade_width").as_double();
 
+  breakaway_enabled_ = get_node()->get_parameter("breakaway_enabled").as_bool();
+  breakaway_velocity_epsilon_ = get_node()->get_parameter("breakaway_velocity_epsilon").as_double();
+  breakaway_deadband_ = get_node()->get_parameter("breakaway_external_torque_deadband").as_double();
+  breakaway_gain_ = get_node()->get_parameter("breakaway_gain").as_double();
+  breakaway_max_torque_ = get_node()->get_parameter("breakaway_max_torque").as_double();
+  breakaway_slew_rate_ = get_node()->get_parameter("breakaway_slew_rate").as_double();
+  if (!std::isfinite(breakaway_velocity_epsilon_) || breakaway_velocity_epsilon_ <= 0.0 ||
+      !std::isfinite(breakaway_deadband_) || breakaway_deadband_ < 0.0 ||
+      !std::isfinite(breakaway_gain_) || breakaway_gain_ < 0.0 ||
+      !std::isfinite(breakaway_max_torque_) || breakaway_max_torque_ <= 0.0 ||
+      !std::isfinite(breakaway_slew_rate_) || breakaway_slew_rate_ <= 0.0) {
+    RCLCPP_ERROR(get_node()->get_logger(), "Invalid breakaway configuration");
+    return CallbackReturn::ERROR;
+  }
+  breakaway_applied_.fill(0.0);
   friction_compensation_requested_ =
       get_node()->get_parameter("friction_compensation_enabled").as_bool();
   friction_calibration_valid_ =
@@ -217,6 +280,39 @@ JointImpedanceController::CallbackReturn JointImpedanceController::on_configure(
     }
   }
 
+  if (gravity_error_compensation_enabled_) {
+    const bool valid_settings =
+        std::isfinite(gravity_error_calibration_lease_s_) && gravity_error_calibration_lease_s_ > 0.0 &&
+        std::isfinite(residual_settings_.command_velocity_epsilon) &&
+        residual_settings_.command_velocity_epsilon > 0.0 &&
+        std::isfinite(residual_settings_.measured_velocity_epsilon) &&
+        residual_settings_.measured_velocity_epsilon > 0.0 &&
+        std::isfinite(residual_settings_.stationary_dwell_s) &&
+        residual_settings_.stationary_dwell_s > 0.0 &&
+        std::isfinite(residual_settings_.minimum_sample_s) &&
+        residual_settings_.minimum_sample_s > 0.0 &&
+        std::isfinite(residual_settings_.filter_tau_s) &&
+        residual_settings_.filter_tau_s > 0.0 &&
+        std::isfinite(residual_settings_.sampling_command_torque_epsilon) &&
+        residual_settings_.sampling_command_torque_epsilon >= 0.0 &&
+        std::isfinite(residual_settings_.sample_deviation_limit) &&
+        residual_settings_.sample_deviation_limit > 0.0 &&
+        std::isfinite(residual_settings_.output_slew_rate) &&
+        residual_settings_.output_slew_rate > 0.0 &&
+        std::isfinite(residual_settings_.pose_radius) &&
+        residual_settings_.pose_radius >= 0.0 &&
+        std::isfinite(residual_settings_.pose_fade_width) &&
+        residual_settings_.pose_fade_width > 0.0 &&
+        copy_parameter_array(get_node()->get_parameter("gravity_error_max_torque").as_double_array(),
+                             residual_settings_.torque_limits);
+    if (!valid_settings ||
+        std::any_of(residual_settings_.torque_limits.begin(), residual_settings_.torque_limits.end(),
+                    [](double limit) { return !std::isfinite(limit) || limit <= 0.0; })) {
+      RCLCPP_ERROR(get_node()->get_logger(), "Invalid residual compensation configuration");
+      return CallbackReturn::ERROR;
+    }
+  }
+
   friction_compensation_active_ =
       friction_compensation_requested_ && friction_calibration_valid_ &&
       friction_compensation_scale_ > 0.0 &&
@@ -227,7 +323,7 @@ JointImpedanceController::CallbackReturn JointImpedanceController::on_configure(
       mass_damping_.begin(), mass_damping_.end(),
       [](double gain) { return std::abs(gain) > 0.0; });
 
-  if (use_mass_damping_) {
+  if (use_mass_damping_ || gravity_error_compensation_enabled_ || breakaway_enabled_) {
     const std::string interface_prefix =
         (arm_prefix_.empty() ? std::string{} : arm_prefix_ + "_") + robot_type_ + "/";
     franka_robot_model_ = std::make_unique<franka_semantic_components::FrankaRobotModel>(
@@ -240,7 +336,32 @@ JointImpedanceController::CallbackReturn JointImpedanceController::on_configure(
   ImpedanceCommand initial;
   command_buffer_.writeFromNonRT(initial);
   last_tau_command_.fill(0.0);
+  breakaway_applied_.fill(0.0);
   timeout_hold_initialized_ = false;
+  residual_compensator_.reset();
+  residual_realtime_pub_.reset();
+  residual_pub_.reset();
+  calibration_sub_.reset();
+  if (gravity_error_compensation_enabled_) {
+    residual_compensator_ = std::make_unique<ResidualTorqueCompensator>(residual_settings_);
+    CalibrationAuthorization disabled;
+    calibration_buffer_.writeFromNonRT(disabled);
+    calibration_sub_ = get_node()->create_subscription<std_msgs::msg::Bool>(
+        "~/gravity_error_calibration_enable", rclcpp::QoS(1).reliable().durability_volatile(),
+        std::bind(&JointImpedanceController::calibration_callback, this, std::placeholders::_1));
+    residual_pub_ = get_node()->create_publisher<std_msgs::msg::Float64MultiArray>(
+        "~/gravity_error_state", rclcpp::QoS(2).best_effort().durability_volatile());
+    residual_realtime_pub_ =
+        std::make_unique<realtime_tools::RealtimePublisher<std_msgs::msg::Float64MultiArray>>(
+            residual_pub_);
+    // diagnostic: 0..6 estimate, 7..13 applied, 14 calibrated, 15 collecting
+    residual_realtime_pub_->msg_.data.resize(16, 0.0);
+    residual_publish_s_ = 0.0;
+    RCLCPP_WARN(get_node()->get_logger(),
+        "EXPERIMENTAL residual calibration enabled. No contact is not detectable "
+        "from zero velocity: authorize only while the arm is externally unloaded. "
+        "Repeated Bool true messages on ~/gravity_error_calibration_enable required.");
+  }
 
   command_sub_ = get_node()->create_subscription<sensor_msgs::msg::JointState>(
       command_topic_, rclcpp::QoS(1).best_effort().durability_volatile(),
@@ -262,7 +383,7 @@ JointImpedanceController::CallbackReturn JointImpedanceController::on_configure(
         get_node()->get_logger(),
         "Friction compensation ACTIVE: source='%s', age=%.2f h, scale=%.3f, "
         "enabled=[%s], epsilon=%.4f rad/s; "
-        "all-speed strictly odd %s model, no feedforward on command timeout, torque bias excluded",
+        "all-speed strictly odd %s model, friction remains active on command timeout",
         friction_calibration_source_.c_str(), friction_calibration_age_hours_,
         friction_compensation_scale_, mask.c_str(), friction_smoothing_velocity_,
         friction_stribeck_enabled_ ? "Stribeck" : "Coulomb-viscous");
@@ -280,9 +401,14 @@ JointImpedanceController::CallbackReturn JointImpedanceController::on_activate(
     const rclcpp_lifecycle::State&)
 {
   last_tau_command_.fill(0.0);
+  breakaway_applied_.fill(0.0);
   timeout_hold_initialized_ = false;
+  if (residual_compensator_) residual_compensator_->reset();
+  residual_publish_s_ = 0.0;
+  CalibrationAuthorization disabled;
+  calibration_buffer_.writeFromNonRT(disabled);
 
-  if (use_mass_damping_ && franka_robot_model_) {
+  if ((use_mass_damping_ || gravity_error_compensation_enabled_ || breakaway_enabled_) && franka_robot_model_) {
     franka_robot_model_->assign_loaned_state_interfaces(state_interfaces_);
   }
 
@@ -320,7 +446,7 @@ JointImpedanceController::CallbackReturn JointImpedanceController::on_deactivate
     }
   }
 
-  if (use_mass_damping_ && franka_robot_model_) {
+  if ((use_mass_damping_ || gravity_error_compensation_enabled_ || breakaway_enabled_) && franka_robot_model_) {
     franka_robot_model_->release_interfaces();
   }
 
@@ -335,7 +461,7 @@ JointImpedanceController::CallbackReturn JointImpedanceController::on_deactivate
 }
 
 controller_interface::return_type JointImpedanceController::update(
-    const rclcpp::Time& time, const rclcpp::Duration&) {
+    const rclcpp::Time& time, const rclcpp::Duration& period) {
   (void)time;
   std::array<double, kNumJoints> q{};
   std::array<double, kNumJoints> dq{};
@@ -419,14 +545,98 @@ controller_interface::return_type JointImpedanceController::update(
     }
   }
 
-  // Friction feedforward is only permitted while a fresh command is present.
-  // On timeout, do not inject an unmatched active torque. Position-hold (if
-  // configured) and the existing torque/rate limits still run normally.
-  if (!timed_out && friction_compensation_active_) {
+  // Manual-guidance friction compensation is independent of command freshness.
+  // Command timeout continues to gate position/velocity/effort feedforward.
+  if (friction_compensation_active_) {
     for (std::size_t i = 0; i < kNumJoints; ++i) {
       if (friction_joint_enable_[i]) {
         tau_desired[i] += friction_compensation_torque(i, dq[i]);
       }
+    }
+  }
+
+  // Experimental breakaway assist (OFF by default). This uses a torque-residual
+  // proxy; it is NOT a validated external wrench measurement. Positive feedback
+  // must only be used after observing its behavior with the robot secured.
+  if (breakaway_enabled_ && franka_robot_model_) {
+    const auto gravity = franka_robot_model_->getGravityForceVector();
+    const double dt = period.seconds();
+    if (!std::isfinite(dt) || dt <= 0.0) return controller_interface::return_type::ERROR;
+    for (std::size_t i = 0; i < kNumJoints; ++i) {
+      const auto measured = state_interfaces_[3 * i + 2].get_optional();
+      if (!measured.has_value() || !std::isfinite(measured.value()) ||
+          !std::isfinite(gravity[i])) return controller_interface::return_type::ERROR;
+      // Previous control effort is subtracted to avoid positive feedback from our
+      // own commanded torque, but internal actuator dynamics still contaminate it.
+      const double external_proxy = measured.value() - gravity[i] - last_tau_command_[i];
+      double target = 0.0;
+      if (std::abs(dq[i]) <= breakaway_velocity_epsilon_) {
+        const double magnitude = std::max(0.0, std::abs(external_proxy) - breakaway_deadband_);
+        target = std::copysign(std::min(breakaway_max_torque_, breakaway_gain_ * magnitude),
+                               external_proxy);
+      }
+      const double max_step = breakaway_slew_rate_ * dt;
+      breakaway_applied_[i] += std::clamp(target - breakaway_applied_[i], -max_step, max_step);
+      tau_desired[i] += breakaway_applied_[i];
+    }
+  }
+
+  // Residual is sampled ONLY under an operator-authorized, unloaded calibration
+  // lease, after all commanded torques have become approximately zero. It is
+  // held (not adapted) while the operator moves the arm. Calibration torque is
+  // switched off smoothly; correction is bounded independently of friction.
+  if (residual_compensator_ && franka_robot_model_) {
+    const std::array<double, 7> gravity = franka_robot_model_->getGravityForceVector();
+    std::array<double, kNumJoints> tau_measured{};
+    for (std::size_t i = 0; i < kNumJoints; ++i) {
+      const auto torque = state_interfaces_[3 * i + 2].get_optional();
+      if (!torque.has_value() || !std::isfinite(torque.value()) ||
+          !std::isfinite(gravity[i])) {
+        return controller_interface::return_type::ERROR;
+      }
+      tau_measured[i] = torque.value();
+    }
+
+    const auto* authorization = calibration_buffer_.readFromRT();
+    const bool authorized = authorization != nullptr && authorization->enabled &&
+        std::chrono::duration<double>(steady_now - authorization->received_at).count() <=
+            gravity_error_calibration_lease_s_;
+    // No sampling if another controller command is delivering nonzero torque.
+    // The actual torque guard inside the estimator provides a second check.
+    bool effort_command_zero = !timed_out;
+    if (command != nullptr && command->has_effort) {
+      for (double value : command->effort) {
+        effort_command_zero = effort_command_zero &&
+            std::abs(effort_feedforward_scale_ * value) <
+                residual_settings_.sampling_command_torque_epsilon;
+      }
+    }
+    const std::array<double, kNumJoints> commanded_velocity =
+        (!timed_out && command->has_velocity) ? command->velocity
+                                             : std::array<double, kNumJoints>{};
+    const auto& correction = residual_compensator_->update(
+        period.seconds(), !timed_out, !timed_out && command->has_velocity &&
+        effort_command_zero, commanded_velocity, q, dq, tau_measured, gravity,
+        last_tau_command_, authorized && effort_command_zero);
+    for (std::size_t i = 0; i < kNumJoints; ++i) {
+      tau_desired[i] += correction[i];
+    }
+
+    // Nonblocking, allocation-free periodic diagnostics from the RT loop.
+    if (std::isfinite(period.seconds()) && period.seconds() > 0.0) {
+      residual_publish_s_ += period.seconds();
+    }
+    if (residual_publish_s_ >= 0.1 && residual_realtime_pub_ &&
+        residual_realtime_pub_->trylock()) {
+      residual_publish_s_ = 0.0;
+      auto& data = residual_realtime_pub_->msg_.data;
+      for (std::size_t i = 0; i < kNumJoints; ++i) {
+        data[i] = residual_compensator_->estimate()[i];
+        data[7 + i] = residual_compensator_->applied()[i];
+      }
+      data[14] = residual_compensator_->calibrated() ? 1.0 : 0.0;
+      data[15] = residual_compensator_->collecting() ? 1.0 : 0.0;
+      residual_realtime_pub_->unlockAndPublish();
     }
   }
 
@@ -457,6 +667,14 @@ controller_interface::return_type JointImpedanceController::update(
   return controller_interface::return_type::OK;
 }
 
+void JointImpedanceController::calibration_callback(
+    const std_msgs::msg::Bool::SharedPtr msg) {
+  CalibrationAuthorization authorization;
+  authorization.enabled = msg->data;
+  authorization.received_at = std::chrono::steady_clock::now();
+  calibration_buffer_.writeFromNonRT(authorization);
+}
+
 void JointImpedanceController::command_callback(const sensor_msgs::msg::JointState::SharedPtr msg) {
   ImpedanceCommand command;
   command.has_position = extract_field(*msg, msg->position, command.position);
@@ -485,6 +703,8 @@ bool JointImpedanceController::extract_field(
     if (field.size() != kNumJoints) {
       return false;
     }
+    if (!std::all_of(field.begin(), field.end(),
+                     [](double value) { return std::isfinite(value); })) return false;
     std::copy(field.begin(), field.end(), output.begin());
     return true;
   }
@@ -496,6 +716,7 @@ bool JointImpedanceController::extract_field(
     bool found = false;
     for (std::size_t msg_i = 0; msg_i < msg.name.size(); ++msg_i) {
       if (msg.name[msg_i] == joint_names_[joint_i]) {
+        if (!std::isfinite(field[msg_i])) return false;
         output[joint_i] = field[msg_i];
         found = true;
         break;
@@ -539,10 +760,11 @@ bool JointImpedanceController::read_joint_state(
     std::array<double, kNumJoints>& dq) const
 {
   for (std::size_t i = 0; i < kNumJoints; ++i) {
-    const auto q_value = state_interfaces_[2 * i].get_optional();
-    const auto dq_value = state_interfaces_[2 * i + 1].get_optional();
+    const auto q_value = state_interfaces_[((gravity_error_compensation_enabled_ || breakaway_enabled_) ? 3 : 2) * i].get_optional();
+    const auto dq_value = state_interfaces_[((gravity_error_compensation_enabled_ || breakaway_enabled_) ? 3 : 2) * i + 1].get_optional();
 
-    if (!q_value.has_value() || !dq_value.has_value()) {
+    if (!q_value.has_value() || !dq_value.has_value() ||
+        !std::isfinite(q_value.value()) || !std::isfinite(dq_value.value())) {
       return false;
     }
 

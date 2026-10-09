@@ -13,7 +13,10 @@
 #include <realtime_tools/realtime_buffer.hpp>
 #include <sensor_msgs/msg/joint_state.hpp>
 #include <std_msgs/msg/bool.hpp>
+#include <std_msgs/msg/float64_multi_array.hpp>
+#include <realtime_tools/realtime_publisher.hpp>
 #include <franka_semantic_components/franka_robot_model.hpp>
+#include "low_level/residual_torque_compensator.hpp"
 
 namespace low_level {
 
@@ -53,6 +56,12 @@ class JointImpedanceController : public controller_interface::ControllerInterfac
   bool read_joint_state(std::array<double, kNumJoints>& q,
                         std::array<double, kNumJoints>& dq) const;
   double friction_compensation_torque(std::size_t joint_i, double dq) const;
+  void calibration_callback(const std_msgs::msg::Bool::SharedPtr msg);
+
+  struct CalibrationAuthorization {
+    bool enabled{false};
+    std::chrono::steady_clock::time_point received_at{};
+  };
 
   std::string robot_type_;
   std::string arm_prefix_;
@@ -72,6 +81,27 @@ class JointImpedanceController : public controller_interface::ControllerInterfac
   std::array<double, kNumJoints> timeout_hold_position_{};
   bool timeout_hold_initialized_{false};
   bool use_mass_damping_{false};
+
+  // Local, explicitly operator-authorized residual learning. Inactive by default.
+  bool gravity_error_compensation_enabled_{false};
+  double gravity_error_calibration_lease_s_{0.35};
+  ResidualTorqueCompensator::Settings residual_settings_{};
+  std::unique_ptr<ResidualTorqueCompensator> residual_compensator_;
+  realtime_tools::RealtimeBuffer<CalibrationAuthorization> calibration_buffer_;
+  rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr calibration_sub_;
+  rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr residual_pub_;
+  std::unique_ptr<realtime_tools::RealtimePublisher<std_msgs::msg::Float64MultiArray>>
+      residual_realtime_pub_;
+  double residual_publish_s_{0.0};
+
+  // Experimental positive breakaway assistance; disabled by default.
+  bool breakaway_enabled_{false};
+  double breakaway_velocity_epsilon_{0.004};
+  double breakaway_deadband_{0.6};
+  double breakaway_gain_{0.10};
+  double breakaway_max_torque_{0.08};
+  double breakaway_slew_rate_{0.10};
+  std::array<double, kNumJoints> breakaway_applied_{};
 
   // Optional calibrated friction feedforward. Calibration is selected and
   // freshness-checked by the launch file; the RT update loop only uses these
