@@ -299,7 +299,7 @@ def generate_launch_description():
         DeclareLaunchArgument("impedance_stiffness", default_value="[200.0,200.0,200.0,200.0,100.0,100.0,100.0]"),
         DeclareLaunchArgument("impedance_damping", default_value="[30.0,30.0,30.0,30.0,20.0,20.0,20.0]"),
         DeclareLaunchArgument("impedance_mass_damping", default_value="[30.0,30.0,30.0,30.0,20.0,20.0,20.0]"),
-        DeclareLaunchArgument("impedance_delta_tau_max", default_value="1.0"),
+        DeclareLaunchArgument("impedance_delta_tau_max", default_value="1.00"),
         DeclareLaunchArgument("impedance_max_torque", default_value="[0.0,0.0,0.0,0.0,0.0,0.0,0.0]"),
         DeclareLaunchArgument("impedance_hold_position_on_timeout", default_value="false"),
         DeclareLaunchArgument("impedance_friction_compensation_enabled", default_value="true"),
