@@ -2,19 +2,15 @@
 
 ROS 2 Jazzy control stack for a **Franka Research 3 (FR3)** with:
 
-- hardware-facing joint velocity control,
-- hardware-facing joint impedance / effort control,
-- automatic residual-friction compensation,
-- optional experimental breakaway torque assistance for hand-guiding,
-- optional operator-calibrated local torque-offset (gravity-error candidate) compensation,
+- Hardware-facing joint velocity control,
+- Hardware-facing joint impedance / effort control,
+- Automatic residual-friction compensation,
+- Optional experimental breakaway torque assistance for hand-guiding,
+- Optional operator-calibrated local torque-offset (gravity-error candidate) compensation,
 - Cartesian inverse-kinematics velocity control,
-- constrained Cartesian QP velocity control,
+- Constrained Cartesian QP velocity control,
 - Cartesian PID position control,
 - Cartesian LMPC position control,
-- gripper ratio control,
-- dynamics observation and friction identification,
-- config-driven UDP <-> ROS 2 bridging for external commands
-- readiness-driven startup instead of fixed launch delays.
 
 The stack is split into three ROS 2 packages:
 
