@@ -28,7 +28,7 @@ QpVelocityNode::QpVelocityNode() : Node("qp_velocity_controller") {
   if (joint_names_.size() != 7) throw std::runtime_error("joint_names must contain 7 entries");
   if (root_link_.empty()) root_link_ = deriveRootLink(robot_type_, arm_prefix_);
   // tip_link=auto is resolved from the received /robot_description.
-  RCLCPP_INFO(get_logger(), "URDF_TIP_AUTO_V7: requested tip_link=\"%s\"", tip_link_.c_str());
+  RCLCPP_INFO(get_logger(), "URDF_TIP_AUTO: requested tip_link=\"%s\"", tip_link_.c_str());
 
   frequency_ = declare_parameter<double>("frequency", 200.0);
   command_timeout_ = declare_parameter<double>("command_timeout", 0.1);
@@ -137,7 +137,7 @@ void QpVelocityNode::robotDescriptionCallback(const std_msgs::msg::String::Share
   }
   tip_link_ = kinematics_.tipLink();
   kinematics_ready_ = true;
-  RCLCPP_INFO(get_logger(), "FR3_KINEMATICS_V7: initialized from /robot_description: %s -> %s",
+  RCLCPP_INFO(get_logger(), "FR3_KINEMATICS: initialized from /robot_description: %s -> %s",
               root_link_.c_str(), tip_link_.c_str());
 }
 
