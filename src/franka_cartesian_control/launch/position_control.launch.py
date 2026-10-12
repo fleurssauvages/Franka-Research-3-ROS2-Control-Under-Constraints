@@ -54,7 +54,6 @@ def _setup(context):
             "use_fake_hardware": LaunchConfiguration("use_fake_hardware").perform(context),
             "load_franka_robot_state_broadcaster": LaunchConfiguration("load_franka_robot_state_broadcaster").perform(context),
             "joint_state_rate": LaunchConfiguration("joint_state_rate").perform(context),
-            "low_level_controller_start_delay": LaunchConfiguration("low_level_controller_start_delay").perform(context),
             "readiness_stable_time": LaunchConfiguration("readiness_stable_time").perform(context),
             "readiness_warn_after": LaunchConfiguration("readiness_warn_after").perform(context),
             "low_level_tracking_time_constant": LaunchConfiguration("low_level_tracking_time_constant").perform(context),
@@ -71,7 +70,6 @@ def _setup(context):
             "impedance_friction_calibration_file": LaunchConfiguration("impedance_friction_calibration_file").perform(context),
             "impedance_friction_calibration_max_age_hours": LaunchConfiguration("impedance_friction_calibration_max_age_hours").perform(context),
             "impedance_friction_use_recommended_enable": LaunchConfiguration("impedance_friction_use_recommended_enable").perform(context),
-            "impedance_friction_apply_torque_bias": LaunchConfiguration("impedance_friction_apply_torque_bias").perform(context),
             "impedance_friction_compensation_scale": LaunchConfiguration("impedance_friction_compensation_scale").perform(context),
             "impedance_friction_stribeck_enabled": LaunchConfiguration("impedance_friction_stribeck_enabled").perform(context),
             "impedance_friction_max_compensation_torque": LaunchConfiguration("impedance_friction_max_compensation_torque").perform(context),
@@ -179,11 +177,9 @@ def generate_launch_description():
         "position_controllers.yaml",
     )
     return LaunchDescription([
-        DeclareLaunchArgument("position_controller", default_value="pid", description="pid or lmpc"),
+        DeclareLaunchArgument("position_controller", default_value="lmpc", description="pid or lmpc"),
         DeclareLaunchArgument("velocity_controller", default_value="qp", description="ik or qp"),
         DeclareLaunchArgument("position_config_file", default_value=default_config),
-        DeclareLaunchArgument("position_start_delay", default_value="0.0",
-                              description="Deprecated compatibility argument; position startup now waits for IK/QP ready"),
         DeclareLaunchArgument("readiness_stable_time", default_value="0.25",
                               description="Readiness conditions must stay true for this long before startup continues"),
         DeclareLaunchArgument("readiness_warn_after", default_value="5.0",
@@ -191,22 +187,22 @@ def generate_launch_description():
         DeclareLaunchArgument("position_frequency", default_value="50.0"),
         DeclareLaunchArgument(
             "max_velocity",
-            default_value="[1.0,1.0,1.0,1.0,1.5,1.5,1.5]",
+            default_value="[4.0,4.0,4.0,4.0,3.0,3.0,3.0]",
             description="Joint velocity limits used by both IK and QP [rad/s]",
         ),
         DeclareLaunchArgument(
             "max_acceleration",
-            default_value="[1.5,1.5,1.5,1.5,1.5,1.5,1.5]",
+            default_value="[3.0,3.0,3.0,3.0,3.0,3.0,3.0]",
             description="Joint acceleration limits used by both IK and QP [rad/s^2]",
         ),
         DeclareLaunchArgument(
             "pose_watchdog_timeout",
-            default_value="0.50",
+            default_value="0.10",
             description="Seconds without a desired PoseStamped before PID/LMPC stops commanding; must be > 0",
         ),
         DeclareLaunchArgument(
             "pid_kp",
-            default_value="[2.0, 2.0, 2.0, 2.0, 2.0, 2.0]",
+            default_value="[4.0, 4.0, 4.0, 4.0, 4.0, 4.0]",
             description="Cartesian PID proportional gains [x,y,z,rx,ry,rz]",
         ),
         DeclareLaunchArgument(
@@ -236,27 +232,27 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             "lmpc_velocity_tracking_time_constant",
-            default_value="0.05",
+            default_value="0.02",
             description="First-order LMPC actuator time constant [s]; increase if measured TCP velocity responds more slowly than commanded twist.",
         ),
         DeclareLaunchArgument(
             "lmpc_max_twist",
-            default_value="[8.0, 8.0, 8.0, 1.0, 1.0, 1.0]",
+            default_value="[16.0, 16.0, 16.0, 16.0, 16.0, 16.0]",
             description="LMPC Cartesian twist limits [vx,vy,vz,wx,wy,wz] in m/s and rad/s",
         ),
         DeclareLaunchArgument(
             "lmpc_max_acceleration",
-            default_value="[16.0, 16.0, 16.0, 8.0, 8.0, 8.0]",
+            default_value="[32.0, 32.0, 32.0, 32.0, 32.0, 32.0]",
             description="LMPC full-horizon desired-twist slew limits [m/s^2, rad/s^2]",
         ),
         DeclareLaunchArgument(
             "lmpc_velocity_weights",
-            default_value="[0.5, 0.5, 0.5, 0.5, 0.5, 0.5]",
+            default_value="[0.3, 0.3, 0.3, 0.3, 0.3, 0.3]",
             description="LMPC running weights on predicted actual TCP velocity",
         ),
         DeclareLaunchArgument(
             "lmpc_terminal_velocity_weights",
-            default_value="[50.0, 50.0, 50.0, 50.0, 50.0, 50.0]",
+            default_value="[25.0, 25.0, 25.0, 25.0, 25.0, 25.0]",
             description="LMPC terminal actual-velocity weights; high values force planned arrival with little residual speed",
         ),
         DeclareLaunchArgument("robot_type", default_value="fr3"),
@@ -277,10 +273,6 @@ def generate_launch_description():
         DeclareLaunchArgument(
             "joint_state_rate", default_value="250",
             description="Joint-state publication rate in Hz (controller-manager stays at 1000 Hz)",
-        ),
-        DeclareLaunchArgument(
-            "low_level_controller_start_delay", default_value="0.0",
-            description="Deprecated compatibility argument; low-level startup now uses readiness detection",
         ),
         DeclareLaunchArgument(
             "low_level_tracking_time_constant", default_value="0.03",
@@ -310,7 +302,6 @@ def generate_launch_description():
         DeclareLaunchArgument("impedance_friction_calibration_file", default_value=""),
         DeclareLaunchArgument("impedance_friction_calibration_max_age_hours", default_value="24.0"),
         DeclareLaunchArgument("impedance_friction_use_recommended_enable", default_value="true"),
-        DeclareLaunchArgument("impedance_friction_apply_torque_bias", default_value="false", description="Deprecated; strictly odd friction compensation never applies torque bias"),
         DeclareLaunchArgument("impedance_friction_compensation_scale", default_value="1.0"),
         DeclareLaunchArgument("impedance_friction_stribeck_enabled", default_value="true",
                               description="Require schema-v4 Stribeck friction calibration (false selects legacy Coulomb)"),

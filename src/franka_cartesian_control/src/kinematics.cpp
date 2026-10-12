@@ -16,14 +16,12 @@ bool endsWith(const std::string& value, const std::string& suffix) {
 
 }  // namespace
 
-// v7.1: preserve the original C++ symbol for any callers that were compiled
-// against v6 headers. Both entry points use the v7 URDF-aware tip resolver.
 bool Kinematics::initialize(const std::string& urdf, const std::string& root_link,
                             const std::string& tip_link, std::string* error) {
-  return initializeFromRobotDescriptionV7(urdf, root_link, tip_link, error);
+  return initializeFromRobotDescription(urdf, root_link, tip_link, error);
 }
 
-bool Kinematics::initializeFromRobotDescriptionV7(const std::string& urdf, const std::string& root_link,
+bool Kinematics::initializeFromRobotDescription(const std::string& urdf, const std::string& root_link,
                             const std::string& requested_tip_link, std::string* error) {
   ready_ = false;
   resolved_tip_link_.clear();
@@ -31,10 +29,6 @@ bool Kinematics::initializeFromRobotDescriptionV7(const std::string& urdf, const
   fk_solver_.reset();
   chain_ = KDL::Chain();
 
-  // Both compatibility and v7 entry points use this statically linked
-  // implementation, so "auto" is never interpreted by the old resolver.
-  // `auto` is a launch-safe sentinel. The empty string remains a backward-
-  // compatible alias, but users no longer need to pass an empty ROS parameter.
   std::string requested = requested_tip_link;
   const auto first = requested.find_first_not_of(" \t\r\n");
   if (first == std::string::npos) {
@@ -66,7 +60,7 @@ bool Kinematics::initializeFromRobotDescriptionV7(const std::string& urdf, const
     // configuration error, never an invitation to silently pick another link.
     if (!tree.getChain(root_link, requested, chain_)) {
       if (error) {
-        *error = "[FR3_KINEMATICS_V7] Requested tip_link '" + requested +
+        *error = "[FR3_KINEMATICS] Requested tip_link '" + requested +
                  "' is not reachable from '" + root_link +
                  "' in /robot_description; check the installed configuration";
       }
@@ -74,7 +68,7 @@ bool Kinematics::initializeFromRobotDescriptionV7(const std::string& urdf, const
     }
     if (chain_.getNrOfJoints() != kDof) {
       if (error) {
-        *error = "[FR3_KINEMATICS_V7] Requested tip_link '" + requested + "' has " +
+        *error = "[FR3_KINEMATICS] Requested tip_link '" + requested + "' has " +
                  std::to_string(chain_.getNrOfJoints()) +
                  " movable joints from '" + root_link + "', expected 7";
       }
@@ -122,7 +116,7 @@ bool Kinematics::initializeFromRobotDescriptionV7(const std::string& urdf, const
             if (!available.empty()) available += ", ";
             available += match;
           }
-          *error = "[FR3_KINEMATICS_V7] Cannot uniquely resolve a 7-DOF Cartesian tip from '" +
+          *error = "[FR3_KINEMATICS] Cannot uniquely resolve a 7-DOF Cartesian tip from '" +
                    root_link + "' in /robot_description (" +
                    std::to_string(matches.size()) +
                    " possible links: " + available +

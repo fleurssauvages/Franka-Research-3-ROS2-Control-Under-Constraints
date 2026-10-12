@@ -131,7 +131,7 @@ QpVelocityNode::QpVelocityNode() : Node("qp_velocity_controller") {
 void QpVelocityNode::robotDescriptionCallback(const std_msgs::msg::String::SharedPtr msg) {
   if (kinematics_ready_) return;
   std::string error;
-  if (!kinematics_.initializeFromRobotDescriptionV7(msg->data, root_link_, tip_link_, &error)) {
+  if (!kinematics_.initializeFromRobotDescription(msg->data, root_link_, tip_link_, &error)) {
     RCLCPP_ERROR_THROTTLE(get_logger(), *get_clock(), 2000, "%s", error.c_str());
     return;
   }

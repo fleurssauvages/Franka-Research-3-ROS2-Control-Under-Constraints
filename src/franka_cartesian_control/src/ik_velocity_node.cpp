@@ -25,7 +25,7 @@ IkVelocityNode::IkVelocityNode() : Node("ik_velocity_controller") {
   if (joint_names_.size() != 7) throw std::runtime_error("joint_names must contain 7 entries");
   if (root_link_.empty()) root_link_ = deriveRootLink(robot_type_, arm_prefix_);
   // tip_link=auto is resolved from the received /robot_description.
-  RCLCPP_INFO(get_logger(), "URDF_TIP_AUTO_V7: requested tip_link=\"%s\"", tip_link_.c_str());
+  RCLCPP_INFO(get_logger(), "URDF_TIP_AUTO: requested tip_link=\"%s\"", tip_link_.c_str());
 
   frequency_ = declare_parameter<double>("frequency", 200.0);
   command_timeout_ = declare_parameter<double>("command_timeout", 0.1);
@@ -84,13 +84,13 @@ IkVelocityNode::IkVelocityNode() : Node("ik_velocity_controller") {
 void IkVelocityNode::robotDescriptionCallback(const std_msgs::msg::String::SharedPtr msg) {
   if (kinematics_ready_) return;
   std::string error;
-  if (!kinematics_.initializeFromRobotDescriptionV7(msg->data, root_link_, tip_link_, &error)) {
+  if (!kinematics_.initializeFromRobotDescription(msg->data, root_link_, tip_link_, &error)) {
     RCLCPP_ERROR_THROTTLE(get_logger(), *get_clock(), 2000, "%s", error.c_str());
     return;
   }
   tip_link_ = kinematics_.tipLink();
   kinematics_ready_ = true;
-  RCLCPP_INFO(get_logger(), "FR3_KINEMATICS_V7: initialized from /robot_description: %s -> %s",
+  RCLCPP_INFO(get_logger(), "FR3_KINEMATICS: initialized from /robot_description: %s -> %s",
               root_link_.c_str(), tip_link_.c_str());
 }
 
