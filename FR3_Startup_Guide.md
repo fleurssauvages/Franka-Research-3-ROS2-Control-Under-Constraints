@@ -141,7 +141,7 @@ Open **Terminator** (recommended for splitting panes) or a regular terminal. The
 
 ```bash
 cd ~/user_ws
-source /opt/ros/jazzy/setup.bash
+source /opt/ros/jazzy/setup.bash # Loaded by default in the bashsrc you don't have to necessarily
 source install/setup.bash
 ```
 
@@ -149,7 +149,7 @@ If your Franka drivers were installed in a **separate** workspace, source that r
 
 ```bash
 source /opt/ros/jazzy/setup.bash
-source ~/franka_ws/install/setup.bash  # only if this is your driver workspace
+source ~/franka_ws/install/setup.bash  # only if this is your driver workspace, also loaded by default in the bashsrc
 source ~/user_ws/install/setup.bash
 ```
 
@@ -777,7 +777,7 @@ If a graph is flat, first confirm the relevant node is active and messages actua
 3. Press **Ctrl+C** in the active ROS control-stack terminal. Do not start another controller until the first one is inactive.
 4. Stop the UDP bridge, diagnostic publishers and PlotJuggler as appropriate.
 5. Verify controller state (`ros2 control list_controllers`, if the manager is still running) and return to a safe Desk mode/configuration according to the local operating procedure.
-6. Power down the robot through the approved hardware procedure when the session is finished.
+6. Power down the robot through the approved hardware procedure when the session is finished. First, lock the joint from the Desk App, then click on the robot's name (top right) and "Shut Down". Finally, turn off the control box.
 
 If unexpected or unsafe motion occurs, use the **appropriate physical safety stop** immediately; do not depend on reaching the keyboard or waiting for a ROS watchdog.
 
