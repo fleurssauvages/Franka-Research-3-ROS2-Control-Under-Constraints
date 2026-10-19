@@ -248,14 +248,18 @@ def _resolve_friction_calibration(context, robot_type, arm_prefix, mode):
 
 def _setup(context):
     mode = LaunchConfiguration("mode").perform(context).strip().lower()
-    if mode not in ("velocity", "impedance"):
-        raise RuntimeError("mode must be 'velocity' or 'impedance'")
+    if mode not in ("velocity", "position", "impedance"):
+        raise RuntimeError("mode must be 'velocity', 'position', or 'impedance'")
 
     robot_type = LaunchConfiguration("robot_type").perform(context)
     arm_prefix = LaunchConfiguration("arm_prefix").perform(context)
     namespace = LaunchConfiguration("namespace").perform(context)
     robot_ip = LaunchConfiguration("robot_ip").perform(context)
     command_topic = LaunchConfiguration("command_topic").perform(context)
+    position_command_topic = LaunchConfiguration("position_command_topic").perform(context)
+    position_kp = float(LaunchConfiguration("position_kp").perform(context))
+    if not math.isfinite(position_kp) or position_kp < 0.0:
+        raise RuntimeError("position_kp must be finite and nonnegative")
     command_timeout = float(LaunchConfiguration("command_timeout").perform(context))
     load_gripper = _as_bool(LaunchConfiguration("load_gripper").perform(context))
     use_fake_hardware = _as_bool(LaunchConfiguration("use_fake_hardware").perform(context))
@@ -391,6 +395,8 @@ def _setup(context):
         type: franka_robot_state_broadcaster/FrankaRobotStateBroadcaster
       low_level_joint_velocity_controller:
         type: low_level/JointVelocityController
+      low_level_joint_position_controller:
+        type: low_level/JointPositionController
       low_level_joint_impedance_controller:
         type: low_level/JointImpedanceController
       dynamics_observer_controller:
@@ -408,6 +414,18 @@ def _setup(context):
       max_acceleration: {_yaml_array(max_acceleration)}
       max_jerk: {_yaml_array(max_jerk)}
       controller_version: "velocity_tracker_v5"
+
+  low_level_joint_position_controller:
+    ros__parameters:
+      robot_type: "{robot_type}"
+      arm_prefix: "{arm_prefix}"
+      command_topic: "{position_command_topic}"
+      command_timeout: {command_timeout}
+      position_kp: {position_kp}
+      tracking_time_constant: {tracking_time_constant}
+      max_velocity: {_yaml_array(max_velocity)}
+      max_acceleration: {_yaml_array(max_acceleration)}
+      max_jerk: {_yaml_array(max_jerk)}
 
   low_level_joint_impedance_controller:
     ros__parameters:
@@ -494,11 +512,11 @@ def _setup(context):
         }.items(),
     )
 
-    controller_name = (
-        "low_level_joint_velocity_controller"
-        if mode == "velocity"
-        else "low_level_joint_impedance_controller"
-    )
+    controller_name = {
+        "velocity": "low_level_joint_velocity_controller",
+        "position": "low_level_joint_position_controller",
+        "impedance": "low_level_joint_impedance_controller",
+    }[mode]
 
     spawner = Node(
         package="controller_manager",
@@ -589,7 +607,7 @@ def generate_launch_description():
     default_cartesian_collision = "[20.0,20.0,20.0,25.0,25.0,25.0]"
 
     args = [
-        DeclareLaunchArgument("mode", default_value="impedance", description="velocity or impedance"),
+        DeclareLaunchArgument("mode", default_value="impedance", description="velocity, position, or impedance"),
         DeclareLaunchArgument("robot_ip", default_value="192.16.0.1"),
         DeclareLaunchArgument("robot_type", default_value="fr3"),
         DeclareLaunchArgument("arm_prefix", default_value=""),
@@ -620,6 +638,8 @@ def generate_launch_description():
             description="Seconds before readiness gates start logging missing conditions.",
         ),
         DeclareLaunchArgument("command_topic", default_value="/fr3/joint_commands"),
+        DeclareLaunchArgument("position_command_topic", default_value="/fr3/joint_position_commands"),
+        DeclareLaunchArgument("position_kp", default_value="1.0"),
         DeclareLaunchArgument("dynamics_observation_topic", default_value="/fr3/dynamics_observation"),
         DeclareLaunchArgument("dynamics_publish_rate", default_value="200.0"),
         DeclareLaunchArgument("dynamics_acceleration_filter_tau", default_value="0.03"),

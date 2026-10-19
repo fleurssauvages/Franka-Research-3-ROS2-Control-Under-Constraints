@@ -7,6 +7,12 @@
     <description>Receives sensor_msgs/JointState velocity commands and writes Franka joint velocity interfaces.</description>
   </class>
   <class
+    name="low_level/JointPositionController"
+    type="low_level::JointPositionController"
+    base_class_type="controller_interface::ControllerInterface">
+    <description>Proportional joint-position tracking over Franka joint velocity interfaces.</description>
+  </class>
+  <class
     name="low_level/JointImpedanceController"
     type="low_level::JointImpedanceController"
     base_class_type="controller_interface::ControllerInterface">

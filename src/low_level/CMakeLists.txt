@@ -22,6 +22,7 @@ find_package(franka_semantic_components REQUIRED)
 
 add_library(low_level_controllers SHARED
   src/joint_velocity_controller.cpp
+  src/joint_position_controller.cpp
   src/joint_impedance_controller.cpp
   src/dynamics_observer_controller.cpp
 )

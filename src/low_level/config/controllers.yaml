@@ -11,6 +11,8 @@
         type: franka_robot_state_broadcaster/FrankaRobotStateBroadcaster
       low_level_joint_velocity_controller:
         type: low_level/JointVelocityController
+      low_level_joint_position_controller:
+        type: low_level/JointPositionController
       low_level_joint_impedance_controller:
         type: low_level/JointImpedanceController
       dynamics_observer_controller:
@@ -28,6 +30,18 @@
       max_acceleration: [2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0]
       max_jerk: [100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0]
       controller_version: "velocity_tracker_v5"
+
+  low_level_joint_position_controller:
+    ros__parameters:
+      robot_type: fr3
+      arm_prefix: ""
+      command_topic: /fr3/joint_position_commands
+      command_timeout: 0.1
+      position_kp: 1.0
+      tracking_time_constant: 0.03
+      max_velocity: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+      max_acceleration: [2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0]
+      max_jerk: [100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0]
 
   low_level_joint_impedance_controller:
     ros__parameters:
