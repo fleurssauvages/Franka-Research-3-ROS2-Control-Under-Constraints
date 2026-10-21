@@ -30,7 +30,7 @@
 3. [Starting ROS 2](#3-starting-ros-2)
 4. [Friction calibration](#4-friction-calibration)
 5. [Low-level control](#5-low-level-control)
-6. [Cartesian velocity control](#6-cartesian-velocity-control)
+6. [Cartesian velocity and force control](#6-cartesian-velocity-control)
 7. [Cartesian position control](#7-cartesian-position-control)
 8. [Gripper control](#8-gripper-control)
 9. [Using the external UDP module](#9-using-the-external-udp-module)
@@ -242,6 +242,12 @@ For **direct Cartesian velocity control**, skip the PID/LMPC layer:
 TwistStamped -> IK or QP -> low-level control -> FR3
 ```
 
+For **Cartesian wrench control**:
+
+```text
+WrenchStamped -> ik_force (J(q)^T F) -> /fr3/tau_command -> low-level torque -> FR3
+```
+
 The repository uses `robot_ip:=192.16.0.1` by default. When that does **not** match your robot's verified **FCI IP**, append `robot_ip:=<actual_FCI_IP>` to the relevant launch command.
 
 ---
@@ -348,7 +354,26 @@ Rate: low-level hardware loop 1 kHz; commands can arrive at a lower rate
 
 The reference velocity controller defaults to a **0.1 s command timeout** and limits accelerations/jerk; this is not a safety-rated stop.
 
-### 5.3 Confirm successful startup
+### 5.3 External joint torque mode
+
+The new `mode:=torque` uses the same low-level impedance controller but **replaces the stiffness/damping tracking contribution with externally commanded joint torque**. The rest of the configured compensation pipeline is retained: validated friction feedforward, optional breakaway assistance, and optional pose-local gravity-error bias compensation. The controller does not add nominal model gravity a second time; Franka's effort interface already handles baseline gravity compensation.
+
+```bash
+ros2 launch low_level control.launch.py mode:=torque
+```
+
+**Input topic:** `/fr3/tau_command` (`sensor_msgs/msg/JointState`, seven `effort` values in FR3 joint order). No desired positions or velocities are required.
+
+For a first connection check, publish **zero external torque** at 50 Hz in a clear workspace:
+
+```bash
+ros2 topic pub -r 50 /fr3/tau_command sensor_msgs/msg/JointState \
+  "{name: [fr3_joint1, fr3_joint2, fr3_joint3, fr3_joint4, fr3_joint5, fr3_joint6, fr3_joint7], effort: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]}"
+```
+
+Zero *external* torque does not necessarily imply zero actuator effort: enabled friction and local-bias compensation may still produce torques. A calibration file must satisfy the same validity and freshness checks as impedance mode. Verify `friction_calibration_valid`, the effective compensation settings, and the controller's torque/rate limits before nonzero tests. The command watchdog is not an emergency stop; some assistance terms can continue after the command expires.
+
+### 5.4 Confirm successful startup
 
 A change in motor sound can be a useful practical indication that the hardware controller has activated, but **motor noise alone is not confirmation**. Watch the launch logs and check:
 
@@ -412,7 +437,38 @@ ros2 launch franka_cartesian_control cartesian_control.launch.py \
 
 For an initial impedance run, consider explicitly setting the high-level forwarding argument `impedance_friction_compensation_scale:=0.3`, after verifying it exists in your installed launch file with `--show-args`.
 
-### 6.4 Publish a desired Cartesian twist
+### 6.4 Cartesian force controller (`ik_force`)
+
+`ik_force` maps a Cartesian wrench to seven joint torques using the current KDL Jacobian: **`tau_ext = J(q)^T F_desired`**. Its output is `/fr3/tau_command`, which is handled by the low-level `torque` mode. With the Cartesian launch's automatic low-level selection, `controller:=ik_force` selects that mode without a separate low-level launch.
+
+```bash
+ros2 launch franka_cartesian_control cartesian_control.launch.py \
+  controller:=ik_force
+```
+
+**Input topic:** `/fr3/cartesian_wrench_command` (`geometry_msgs/msg/WrenchStamped`). Force is in newtons and moment in newton-metres, expressed in the configured KDL root frame (normally `fr3_link0`). The node does not transform arbitrary `frame_id` values with TF.
+
+Start with a **zero-wrench communications test**:
+
+```bash
+ros2 topic pub -r 50 /fr3/cartesian_wrench_command \
+  geometry_msgs/msg/WrenchStamped \
+  "{header: {frame_id: 'fr3_link0'},
+    wrench: {force: {x: 0.0, y: 0.0, z: 0.0},
+             torque: {x: 0.0, y: 0.0, z: 0.0}}}"
+```
+
+Check readiness and the generated torques in separate sourced terminals:
+
+```bash
+ros2 topic echo --once /ik_force_controller/ready
+ros2 topic echo /fr3/tau_command
+ros2 control list_controllers
+```
+
+Only after confirming the end-effector frame, model readiness, limits, compensation configuration, and workspace clearance should a trained operator test a **small nonzero force**. For example, changing `force.z` to `2.0` requests 2 N along root-frame +Z; it **does not** regulate measured contact force and may move the robot. The optional `force_input_mode:=twist` uses damped differential IK and velocity-error feedback to form a wrench before the Jacobian-transpose torque mapping; it is not equivalent to the conventional IK velocity controller.
+
+### 6.5 Publish a desired Cartesian twist
 
 **Input topic:** `/fr3/cartesian_twist_command`  
 **ROS type:** `geometry_msgs/msg/TwistStamped`
@@ -489,7 +545,7 @@ Available layer choices:
 |:--|:--|:--|
 | **Position** | `pid`, `lmpc` | Converts a target TCP pose into a Cartesian twist. |
 | **Cartesian velocity** | `ik`, `qp` | Converts desired TCP twist into joint commands. |
-| **Low-level hardware** | `velocity`, `impedance` | Drives the seven robot joints. |
+| **Low-level hardware** | `velocity`, `impedance`, `torque` | Drives the seven robot joints; `torque` accepts external effort. |
 
 QP and LMPC depend on qpOASES. Use `ros2 launch franka_cartesian_control position_control.launch.py --show-args` to verify which options your checkout accepts.
 
@@ -759,6 +815,8 @@ Useful topics to inspect:
 |:--|:--|
 | `/franka/joint_states` | Measured joint positions and velocities. |
 | `/fr3/joint_commands` | Joint targets sent toward the low-level controller. |
+| `/fr3/tau_command` | Seven externally commanded joint torques in torque mode / from `ik_force`. |
+| `/fr3/cartesian_wrench_command` | Requested Cartesian wrench in `ik_force` mode. |
 | `/fr3/cartesian_twist_command` | Requested Cartesian linear/angular velocity. |
 | `/fr3/cartesian_pose_command` | Requested Cartesian pose. |
 | `/fr3/cartesian_pose` | Current Cartesian pose (when a position controller is running). |
@@ -822,9 +880,11 @@ ros2 topic echo --once /fr3/cartesian_pose
 |:--|:--|
 | **Friction identification** | `ros2 launch low_level dynamics_identification.launch.py motion_mode:=joint run_motion:=true` |
 | **Low-level impedance** | `ros2 launch low_level control.launch.py mode:=impedance` |
+| **Low-level torque** | `ros2 launch low_level control.launch.py mode:=torque` |
 | **Low-level velocity** | `ros2 launch low_level control.launch.py mode:=velocity` |
 | **Cartesian twist via QP** | `ros2 launch franka_cartesian_control cartesian_control.launch.py controller:=qp` |
 | **Cartesian twist via IK** | `ros2 launch franka_cartesian_control cartesian_control.launch.py controller:=ik` |
+| **Cartesian force via IK Jacobian** | `ros2 launch franka_cartesian_control cartesian_control.launch.py controller:=ik_force` |
 | **PID pose control** | `ros2 launch franka_cartesian_control position_control.launch.py position_controller:=pid velocity_controller:=qp` |
 | **LMPC pose control** | `ros2 launch franka_cartesian_control position_control.launch.py position_controller:=lmpc velocity_controller:=qp` |
 | **External UDP bridge** | `ros2 launch udp_bridge udp_bridge.launch.py` (with your JSON configs) |
