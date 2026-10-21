@@ -67,6 +67,9 @@ class JointImpedanceController : public controller_interface::ControllerInterfac
   std::string arm_prefix_;
   std::vector<std::string> joint_names_;
   std::string command_topic_;
+  // torque: effort-only JointState, compensated as impedance with zero
+  // desired velocity and no position spring; impedance: legacy fields.
+  bool torque_only_{false};
 
   double command_timeout_s_{0.01};
   double effort_feedforward_scale_{1.0};

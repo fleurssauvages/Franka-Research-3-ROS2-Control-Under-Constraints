@@ -29,11 +29,21 @@ def _array7(text, name):
     return [float(x) for x in value]
 
 
+def _array6(text, name):
+    try:
+        value = ast.literal_eval(text)
+    except (ValueError, SyntaxError) as exc:
+        raise RuntimeError(f"{name} must be a Python-style list of 6 numbers") from exc
+    if not isinstance(value, (list, tuple)) or len(value) != 6:
+        raise RuntimeError(f"{name} must contain exactly 6 numbers")
+    return [float(x) for x in value]
+
+
 def _setup(context):
     package_share = get_package_share_directory("franka_cartesian_control")
     controller = LaunchConfiguration("controller").perform(context).strip().lower()
-    if controller not in ("ik", "qp"):
-        raise RuntimeError("controller must be 'ik' or 'qp'")
+    if controller not in ("ik", "qp", "ik_force"):
+        raise RuntimeError("controller must be 'ik', 'qp', or 'ik_force'")
 
     config_file = LaunchConfiguration("config_file").perform(context)
     robot_type = LaunchConfiguration("robot_type").perform(context)
@@ -42,6 +52,7 @@ def _setup(context):
     twist_topic = LaunchConfiguration("twist_topic").perform(context)
     joint_state_topic = LaunchConfiguration("joint_state_topic").perform(context)
     joint_command_topic = LaunchConfiguration("joint_command_topic").perform(context)
+    tau_command_topic = LaunchConfiguration("tau_command_topic").perform(context)
     frequency = float(LaunchConfiguration("frequency").perform(context))
     max_velocity = _array7(
         LaunchConfiguration("max_velocity").perform(context), "max_velocity"
@@ -55,10 +66,18 @@ def _setup(context):
     load_gripper = _as_bool(LaunchConfiguration("load_gripper").perform(context))
     requested_tip_link = LaunchConfiguration("tip_link").perform(context).strip()
     low_level_mode = LaunchConfiguration("low_level_mode").perform(context).strip().lower()
-    if low_level_mode not in ("velocity", "impedance"):
-        raise RuntimeError("low_level_mode must be 'velocity' or 'impedance'")
+    if low_level_mode == "auto":
+        low_level_mode = "torque" if controller == "ik_force" else "velocity"
+    if low_level_mode not in ("velocity", "impedance", "torque"):
+        raise RuntimeError("low_level_mode must be 'auto', 'velocity', 'impedance', or 'torque'")
+    if (controller == "ik_force") != (low_level_mode == "torque"):
+        raise RuntimeError("ik_force requires low_level_mode=torque; ik/qp require velocity or impedance")
 
-    executable = "ik_velocity_controller" if controller == "ik" else "qp_velocity_controller"
+    executable = {
+        "ik": "ik_velocity_controller",
+        "qp": "qp_velocity_controller",
+        "ik_force": "ik_force_controller",
+    }[controller]
     node_parameters = {
         "robot_type": robot_type,
         "arm_prefix": arm_prefix,
@@ -79,7 +98,26 @@ def _setup(context):
     # This avoids the previous hidden behavior where QP silently kept the YAML
     # 0.3 rad/s^2 limit while launch arguments only changed IK.
     node_parameters["max_velocity"] = max_velocity
-    node_parameters["max_acceleration"] = max_acceleration
+    if controller != "ik_force":
+        node_parameters["max_acceleration"] = max_acceleration
+    else:
+        # Cartesian force output uses the same KDL IK geometry but publishes
+        # JointState.effort rather than any joint velocity command.
+        node_parameters.update({
+            "force_input_mode": LaunchConfiguration("force_input_mode").perform(context),
+            "wrench_topic": LaunchConfiguration("wrench_topic").perform(context),
+            "torque_command_topic": tau_command_topic,
+            "joint_state_timeout": float(LaunchConfiguration("force_joint_state_timeout").perform(context)),
+            "velocity_to_wrench_gains": _array6(
+                LaunchConfiguration("force_velocity_to_wrench_gains").perform(context),
+                "force_velocity_to_wrench_gains"),
+            "max_cartesian_force": float(LaunchConfiguration("force_max_cartesian_force").perform(context)),
+            "max_cartesian_moment": float(LaunchConfiguration("force_max_cartesian_moment").perform(context)),
+            "max_joint_torque": _array7(
+                LaunchConfiguration("force_max_joint_torque").perform(context),
+                "force_max_joint_torque"),
+        })
+        node_parameters.pop("joint_command_topic")
 
     node = Node(
         package="franka_cartesian_control",
@@ -112,6 +150,9 @@ def _setup(context):
                     "readiness_stable_time": LaunchConfiguration("readiness_stable_time").perform(context),
                     "readiness_warn_after": LaunchConfiguration("readiness_warn_after").perform(context),
                     "command_topic": joint_command_topic,
+                    "tau_command_topic": tau_command_topic,
+                    "torque_max_torque": LaunchConfiguration("torque_max_torque").perform(context),
+                    "torque_delta_tau_max": LaunchConfiguration("torque_delta_tau_max").perform(context),
                     "command_timeout": LaunchConfiguration("low_level_command_timeout").perform(context),
                     "tracking_time_constant": LaunchConfiguration("low_level_tracking_time_constant").perform(context),
                     "max_acceleration": LaunchConfiguration("low_level_max_acceleration").perform(context),
@@ -122,6 +163,25 @@ def _setup(context):
                     "delta_tau_max": LaunchConfiguration("impedance_delta_tau_max").perform(context),
                     "max_torque": LaunchConfiguration("impedance_max_torque").perform(context),
                     "hold_position_on_timeout": LaunchConfiguration("impedance_hold_position_on_timeout").perform(context),
+                    "breakaway_enabled": LaunchConfiguration("impedance_breakaway_enabled").perform(context),
+                    "breakaway_velocity_epsilon": LaunchConfiguration("impedance_breakaway_velocity_epsilon").perform(context),
+                    "breakaway_external_torque_deadband": LaunchConfiguration("impedance_breakaway_external_torque_deadband").perform(context),
+                    "breakaway_gain": LaunchConfiguration("impedance_breakaway_gain").perform(context),
+                    "breakaway_max_torque": LaunchConfiguration("impedance_breakaway_max_torque").perform(context),
+                    "breakaway_slew_rate": LaunchConfiguration("impedance_breakaway_slew_rate").perform(context),
+                    "gravity_error_compensation_enabled": LaunchConfiguration("impedance_gravity_error_compensation_enabled").perform(context),
+                    "gravity_error_calibration_lease_s": LaunchConfiguration("impedance_gravity_error_calibration_lease_s").perform(context),
+                    "gravity_error_command_velocity_epsilon": LaunchConfiguration("impedance_gravity_error_command_velocity_epsilon").perform(context),
+                    "gravity_error_measured_velocity_epsilon": LaunchConfiguration("impedance_gravity_error_measured_velocity_epsilon").perform(context),
+                    "gravity_error_stationary_dwell_s": LaunchConfiguration("impedance_gravity_error_stationary_dwell_s").perform(context),
+                    "gravity_error_minimum_sample_s": LaunchConfiguration("impedance_gravity_error_minimum_sample_s").perform(context),
+                    "gravity_error_filter_tau_s": LaunchConfiguration("impedance_gravity_error_filter_tau_s").perform(context),
+                    "gravity_error_sampling_command_torque_epsilon": LaunchConfiguration("impedance_gravity_error_sampling_command_torque_epsilon").perform(context),
+                    "gravity_error_sample_deviation_limit": LaunchConfiguration("impedance_gravity_error_sample_deviation_limit").perform(context),
+                    "gravity_error_output_slew_rate": LaunchConfiguration("impedance_gravity_error_output_slew_rate").perform(context),
+                    "gravity_error_pose_radius": LaunchConfiguration("impedance_gravity_error_pose_radius").perform(context),
+                    "gravity_error_pose_fade_width": LaunchConfiguration("impedance_gravity_error_pose_fade_width").perform(context),
+                    "gravity_error_max_torque": LaunchConfiguration("impedance_gravity_error_max_torque").perform(context),
                     "friction_compensation_enabled": LaunchConfiguration("impedance_friction_compensation_enabled").perform(context),
                     "friction_calibration_directory": LaunchConfiguration("impedance_friction_calibration_directory").perform(context),
                     "friction_calibration_file": LaunchConfiguration("impedance_friction_calibration_file").perform(context),
@@ -169,7 +229,7 @@ def generate_launch_description():
         get_package_share_directory("franka_cartesian_control"), "config", "controllers.yaml"
     )
     return LaunchDescription([
-        DeclareLaunchArgument("controller", default_value="qp", description="ik or qp"),
+        DeclareLaunchArgument("controller", default_value="qp", description="ik, qp, or ik_force"),
         DeclareLaunchArgument("config_file", default_value=default_config),
         DeclareLaunchArgument("robot_type", default_value="fr3"),
         DeclareLaunchArgument("arm_prefix", default_value=""),
@@ -182,7 +242,8 @@ def generate_launch_description():
                               description="Readiness conditions must stay true for this long before startup continues"),
         DeclareLaunchArgument("readiness_warn_after", default_value="5.0",
                               description="Seconds before readiness gates log missing conditions"),
-        DeclareLaunchArgument("low_level_mode", default_value="velocity", description="velocity (default) or impedance"),
+        DeclareLaunchArgument("low_level_mode", default_value="auto",
+                              description="auto: velocity for ik/qp and torque for ik_force; or velocity/impedance/torque"),
         DeclareLaunchArgument("low_level_command_timeout", default_value="0.1"),
         DeclareLaunchArgument(
             "low_level_tracking_time_constant", default_value="0.03",
@@ -199,11 +260,38 @@ def generate_launch_description():
             description="Hardware-facing 1 kHz tracking jerk limits [rad/s^3]",
         ),
         DeclareLaunchArgument("impedance_stiffness", default_value="[0.0,0.0,0.0,0.0,0.0,0.0,0.0]"),
-        DeclareLaunchArgument("impedance_damping", default_value="[2.0,2.0,2.0,2.0,2.0,2.0,2.0]"),
-        DeclareLaunchArgument("impedance_mass_damping", default_value="[5.0,5.0,5.0,5.0,5.0,5.0,5.0]"),
+        DeclareLaunchArgument("impedance_damping", default_value="[2.0,2.0,2.0,2.0,2.0,2.0,2.0]",
+                              description="Impedance velocity damping; in torque mode uses desired velocity zero."),
+        DeclareLaunchArgument("impedance_mass_damping", default_value="[5.0,5.0,5.0,5.0,5.0,5.0,5.0]",
+                              description="Mass-weighted velocity damping; active for both impedance and torque on real hardware."),
         DeclareLaunchArgument("impedance_delta_tau_max", default_value="1.0"),
+        DeclareLaunchArgument("torque_delta_tau_max", default_value="0.2",
+                              description="Low-level 1 kHz torque slew cap [Nm/update], ik_force mode"),
+        DeclareLaunchArgument("torque_max_torque", default_value="[8.0,8.0,8.0,6.0,4.0,4.0,4.0]",
+                              description="Low-level absolute joint torque caps [Nm], ik_force mode"),
         DeclareLaunchArgument("impedance_max_torque", default_value="[0.0,0.0,0.0,0.0,0.0,0.0,0.0]"),
         DeclareLaunchArgument("impedance_hold_position_on_timeout", default_value="false"),
+        # These compensators and gains are passed through unchanged in both
+        # low-level impedance and compensated torque mode (controller=ik_force).
+        DeclareLaunchArgument("impedance_breakaway_enabled", default_value="true"),
+        DeclareLaunchArgument("impedance_breakaway_velocity_epsilon", default_value="0.001"),
+        DeclareLaunchArgument("impedance_breakaway_external_torque_deadband", default_value="0.6"),
+        DeclareLaunchArgument("impedance_breakaway_gain", default_value="1.0"),
+        DeclareLaunchArgument("impedance_breakaway_max_torque", default_value="8.0"),
+        DeclareLaunchArgument("impedance_breakaway_slew_rate", default_value="0.10"),
+        DeclareLaunchArgument("impedance_gravity_error_compensation_enabled", default_value="true"),
+        DeclareLaunchArgument("impedance_gravity_error_calibration_lease_s", default_value="0.35"),
+        DeclareLaunchArgument("impedance_gravity_error_command_velocity_epsilon", default_value="0.002"),
+        DeclareLaunchArgument("impedance_gravity_error_measured_velocity_epsilon", default_value="0.003"),
+        DeclareLaunchArgument("impedance_gravity_error_stationary_dwell_s", default_value="0.5"),
+        DeclareLaunchArgument("impedance_gravity_error_minimum_sample_s", default_value="1.0"),
+        DeclareLaunchArgument("impedance_gravity_error_filter_tau_s", default_value="2.0"),
+        DeclareLaunchArgument("impedance_gravity_error_sampling_command_torque_epsilon", default_value="0.03"),
+        DeclareLaunchArgument("impedance_gravity_error_sample_deviation_limit", default_value="0.10"),
+        DeclareLaunchArgument("impedance_gravity_error_output_slew_rate", default_value="0.10"),
+        DeclareLaunchArgument("impedance_gravity_error_pose_radius", default_value="0.25"),
+        DeclareLaunchArgument("impedance_gravity_error_pose_fade_width", default_value="0.25"),
+        DeclareLaunchArgument("impedance_gravity_error_max_torque", default_value="[8.0,8.0,8.0,8.0,8.0,8.0,8.0]"),
         DeclareLaunchArgument("impedance_friction_compensation_enabled", default_value="true"),
         DeclareLaunchArgument(
             "impedance_friction_calibration_directory", default_value="",
@@ -258,5 +346,19 @@ def generate_launch_description():
         DeclareLaunchArgument("twist_topic", default_value="/fr3/cartesian_twist_command"),
         DeclareLaunchArgument("joint_state_topic", default_value="/franka/joint_states"),
         DeclareLaunchArgument("joint_command_topic", default_value="/fr3/joint_commands"),
+        DeclareLaunchArgument("tau_command_topic", default_value="/fr3/tau_command",
+                              description="effort-only JointState output from ik_force to low_level torque mode"),
+        DeclareLaunchArgument("force_input_mode", default_value="wrench",
+                              description="ik_force input: wrench (WrenchStamped) or twist (TwistStamped + IK feedback)"),
+        DeclareLaunchArgument("wrench_topic", default_value="/fr3/cartesian_wrench_command"),
+        DeclareLaunchArgument("force_joint_state_timeout", default_value="0.2"),
+        DeclareLaunchArgument("force_velocity_to_wrench_gains", default_value="[40.0,40.0,40.0,5.0,5.0,5.0]",
+                              description="Cartesian damping gains: 3 N/(m/s) and 3 Nm/(rad/s)"),
+        DeclareLaunchArgument("force_max_cartesian_force", default_value="15.0",
+                              description="Cartesian force magnitude limit [N]"),
+        DeclareLaunchArgument("force_max_cartesian_moment", default_value="2.0",
+                              description="Cartesian moment magnitude limit [Nm]"),
+        DeclareLaunchArgument("force_max_joint_torque", default_value="[8.0,8.0,8.0,6.0,4.0,4.0,4.0]",
+                              description="Additional high-level uniform joint torque saturation [Nm]"),
         OpaqueFunction(function=_setup),
     ])

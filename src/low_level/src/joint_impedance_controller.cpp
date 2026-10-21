@@ -68,6 +68,7 @@ JointImpedanceController::CallbackReturn JointImpedanceController::on_init() {
     auto_declare<std::string>("arm_prefix", "");
     auto_declare<std::vector<std::string>>("joint_names", {});
     auto_declare<std::string>("command_topic", "joint_commands");
+    auto_declare<std::string>("command_mode", "impedance");
     auto_declare<double>("command_timeout", 0.01);
     auto_declare<std::vector<double>>("stiffness", std::vector<double>(kNumJoints, 0.0));
     auto_declare<std::vector<double>>("damping", std::vector<double>(kNumJoints, 0.0));
@@ -134,6 +135,12 @@ JointImpedanceController::CallbackReturn JointImpedanceController::on_configure(
   arm_prefix_ = get_node()->get_parameter("arm_prefix").as_string();
   joint_names_ = get_node()->get_parameter("joint_names").as_string_array();
   command_topic_ = get_node()->get_parameter("command_topic").as_string();
+  const auto command_mode = get_node()->get_parameter("command_mode").as_string();
+  if (command_mode != "impedance" && command_mode != "torque") {
+    RCLCPP_ERROR(get_node()->get_logger(), "command_mode must be 'impedance' or 'torque'");
+    return CallbackReturn::ERROR;
+  }
+  torque_only_ = command_mode == "torque";
   command_timeout_s_ = get_node()->get_parameter("command_timeout").as_double();
   effort_feedforward_scale_ = get_node()->get_parameter("effort_feedforward_scale").as_double();
   delta_tau_max_ = get_node()->get_parameter("delta_tau_max").as_double();
@@ -201,7 +208,9 @@ JointImpedanceController::CallbackReturn JointImpedanceController::on_configure(
     RCLCPP_ERROR(get_node()->get_logger(), "joint_names must contain exactly 7 names");
     return CallbackReturn::ERROR;
   }
-  if (command_timeout_s_ <= 0.0 || delta_tau_max_ < 0.0) {
+  if (!std::isfinite(command_timeout_s_) || !std::isfinite(delta_tau_max_) ||
+      !std::isfinite(effort_feedforward_scale_) || command_timeout_s_ <= 0.0 ||
+      delta_tau_max_ < 0.0) {
     RCLCPP_ERROR(get_node()->get_logger(), "command_timeout must be > 0 and delta_tau_max >= 0");
     return CallbackReturn::ERROR;
   }
@@ -212,6 +221,16 @@ JointImpedanceController::CallbackReturn JointImpedanceController::on_configure(
       !copy_parameter_array(get_node()->get_parameter("max_torque").as_double_array(), max_torque_)) {
     RCLCPP_ERROR(get_node()->get_logger(),
                  "stiffness, damping, mass_damping, and max_torque must each contain exactly 7 values");
+    return CallbackReturn::ERROR;
+  }
+
+  if (torque_only_ && (!std::isfinite(effort_feedforward_scale_) ||
+                       effort_feedforward_scale_ != 1.0 || delta_tau_max_ <= 0.0 ||
+                       std::any_of(max_torque_.begin(), max_torque_.end(),
+                           [](double limit) { return !std::isfinite(limit) || limit <= 0.0; }))) {
+    RCLCPP_ERROR(get_node()->get_logger(),
+                 "torque mode requires feedforward_scale=1, delta_tau_max>0, and "
+                 "seven positive finite max_torque limits");
     return CallbackReturn::ERROR;
   }
 
@@ -370,7 +389,8 @@ JointImpedanceController::CallbackReturn JointImpedanceController::on_configure(
       "~/ready", rclcpp::QoS(1).transient_local().reliable());
 
   RCLCPP_INFO(get_node()->get_logger(),
-              "Configured impedance controller on topic '%s' (best-effort latest-value commands)",
+              "Configured impedance controller (%s commands) on topic '%s' (best-effort latest-value)",
+              torque_only_ ? "effort-only" : "position/velocity/effort",
               command_topic_.c_str());
 
   if (friction_compensation_active_) {
@@ -403,6 +423,8 @@ JointImpedanceController::CallbackReturn JointImpedanceController::on_activate(
   last_tau_command_.fill(0.0);
   breakaway_applied_.fill(0.0);
   timeout_hold_initialized_ = false;
+  // Never replay a command received before activation (particularly torque).
+  command_buffer_.writeFromNonRT(ImpedanceCommand{});
   if (residual_compensator_) residual_compensator_->reset();
   residual_publish_s_ = 0.0;
   CalibrationAuthorization disabled;
@@ -515,6 +537,11 @@ controller_interface::return_type JointImpedanceController::update(
     apply_velocity_feedback = true;
   }
 
+  // In torque mode the external effort REPLACES the whole impedance
+  // stiffness/damping contribution; friction, breakaway, gravity-error bias,
+  // timeout handling, saturation and slew limiting below remain unchanged.
+  if (torque_only_) apply_velocity_feedback = false;
+
   if (apply_velocity_feedback) {
     for (std::size_t i = 0; i < kNumJoints; ++i) {
       tau_desired[i] += damping_[i] * velocity_error[i];
@@ -611,12 +638,20 @@ controller_interface::return_type JointImpedanceController::update(
                 residual_settings_.sampling_command_torque_epsilon;
       }
     }
+    // The residual estimator historically required an explicit zero-velocity
+    // command to establish a stationary calibration window. Torque mode has no
+    // velocity field, so a fresh, near-zero external effort is its equivalent
+    // zero-velocity reference. The estimator ALSO verifies measured velocity,
+    // previously sent torque, unloaded residual magnitude and operator lease.
+    // Never learn from a nonzero force/torque command.
+    const bool calibration_velocity_reference = !timed_out && effort_command_zero &&
+        (torque_only_ || command->has_velocity);
     const std::array<double, kNumJoints> commanded_velocity =
         (!timed_out && command->has_velocity) ? command->velocity
                                              : std::array<double, kNumJoints>{};
     const auto& correction = residual_compensator_->update(
-        period.seconds(), !timed_out, !timed_out && command->has_velocity &&
-        effort_command_zero, commanded_velocity, q, dq, tau_measured, gravity,
+        period.seconds(), !timed_out, calibration_velocity_reference,
+        commanded_velocity, q, dq, tau_measured, gravity,
         last_tau_command_, authorized && effort_command_zero);
     for (std::size_t i = 0; i < kNumJoints; ++i) {
       tau_desired[i] += correction[i];
@@ -680,6 +715,16 @@ void JointImpedanceController::command_callback(const sensor_msgs::msg::JointSta
   command.has_position = extract_field(*msg, msg->position, command.position);
   command.has_velocity = extract_field(*msg, msg->velocity, command.velocity);
   command.has_effort = extract_field(*msg, msg->effort, command.effort);
+
+  if (torque_only_ &&
+      (!command.has_effort || msg->effort.size() != kNumJoints ||
+       (!msg->name.empty() && msg->name.size() != kNumJoints) ||
+       !msg->position.empty() || !msg->velocity.empty())) {
+    RCLCPP_WARN_THROTTLE(get_node()->get_logger(), *get_node()->get_clock(), 2000,
+                         "Ignoring torque command: expected exactly 7 finite effort values "
+                         "and no position/velocity fields");
+    return;
+  }
 
   if (!command.has_position && !command.has_velocity && !command.has_effort) {
     RCLCPP_WARN_THROTTLE(get_node()->get_logger(), *get_node()->get_clock(), 2000,

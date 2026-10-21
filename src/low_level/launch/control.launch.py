@@ -171,7 +171,9 @@ def _resolve_friction_calibration(context, robot_type, arm_prefix, mode):
         _LOG.warning(
             "friction_apply_torque_bias is ignored: the current compensation model is strictly odd"
         )
-    if not result["requested"] or mode != "impedance":
+    # Both impedance and torque modes use the same calibrated friction model;
+    # torque mode changes only the external command field and velocity setpoint.
+    if not result["requested"] or mode not in ("impedance", "torque"):
         return result
 
     require_stribeck = _as_bool(LaunchConfiguration("friction_stribeck_enabled").perform(context))
@@ -207,7 +209,7 @@ def _resolve_friction_calibration(context, robot_type, arm_prefix, mode):
     if not parsed:
         _LOG.warning(
             f"Friction compensation requested, but no valid calibration was found in '{directory}'. "
-            "Starting impedance control without friction feedforward."
+            "Starting without friction feedforward."
         )
         return result
 
@@ -248,14 +250,16 @@ def _resolve_friction_calibration(context, robot_type, arm_prefix, mode):
 
 def _setup(context):
     mode = LaunchConfiguration("mode").perform(context).strip().lower()
-    if mode not in ("velocity", "position", "impedance"):
-        raise RuntimeError("mode must be 'velocity', 'position', or 'impedance'")
+    if mode not in ("velocity", "position", "impedance", "torque"):
+        raise RuntimeError("mode must be 'velocity', 'position', 'impedance', or 'torque'")
 
     robot_type = LaunchConfiguration("robot_type").perform(context)
     arm_prefix = LaunchConfiguration("arm_prefix").perform(context)
     namespace = LaunchConfiguration("namespace").perform(context)
     robot_ip = LaunchConfiguration("robot_ip").perform(context)
     command_topic = LaunchConfiguration("command_topic").perform(context)
+    tau_command_topic = LaunchConfiguration("tau_command_topic").perform(context)
+    impedance_command_topic = tau_command_topic if mode == "torque" else command_topic
     position_command_topic = LaunchConfiguration("position_command_topic").perform(context)
     position_kp = float(LaunchConfiguration("position_kp").perform(context))
     if not math.isfinite(position_kp) or position_kp < 0.0:
@@ -282,6 +286,10 @@ def _setup(context):
     damping = _array7(LaunchConfiguration("damping").perform(context), "damping")
     mass_damping = _array7(LaunchConfiguration("mass_damping").perform(context), "mass_damping")
     max_torque = _array7(LaunchConfiguration("max_torque").perform(context), "max_torque")
+    if mode == "torque":
+        max_torque = _array7(LaunchConfiguration("torque_max_torque").perform(context), "torque_max_torque")
+        if any(not math.isfinite(value) or value <= 0.0 for value in max_torque):
+            raise RuntimeError("torque_max_torque must contain 7 positive finite values")
     max_velocity = _array7(LaunchConfiguration("max_velocity").perform(context), "max_velocity")
     max_acceleration = _array7(LaunchConfiguration("max_acceleration").perform(context), "max_acceleration")
     max_jerk = _array7(LaunchConfiguration("max_jerk").perform(context), "max_jerk")
@@ -289,10 +297,26 @@ def _setup(context):
     tracking_time_constant = float(LaunchConfiguration("tracking_time_constant").perform(context))
     effort_ff_scale = float(LaunchConfiguration("effort_feedforward_scale").perform(context))
     delta_tau_max = float(LaunchConfiguration("delta_tau_max").perform(context))
+    if mode == "torque":
+        delta_tau_max = float(LaunchConfiguration("torque_delta_tau_max").perform(context))
+    if not math.isfinite(delta_tau_max) or (mode == "torque" and delta_tau_max <= 0.0):
+        raise RuntimeError("torque slew limit must be finite, and > 0 in torque mode")
     hold_on_timeout = _as_bool(LaunchConfiguration("hold_position_on_timeout").perform(context))
+    if mode == "torque":
+        # External torque replaces both impedance stiffness and damping.
+        # Preserve friction, breakaway, and residual-gravity compensation.
+        if any(not math.isfinite(gain) or gain < 0.0
+               for gain in damping + mass_damping):
+            raise RuntimeError("torque damping and mass_damping gains must be finite and nonnegative")
+        if not math.isfinite(effort_ff_scale) or effort_ff_scale != 1.0:
+            raise RuntimeError("torque mode requires effort_feedforward_scale=1.0")
+        stiffness = [0.0] * 7
+        damping = [0.0] * 7
+        mass_damping = [0.0] * 7
+        hold_on_timeout = False
     friction = _resolve_friction_calibration(context, robot_type, arm_prefix, mode)
     breakaway_enabled = (
-        mode == "impedance"
+        mode in ("impedance", "torque")
         and _as_bool(
             LaunchConfiguration("breakaway_enabled").perform(context)
         )
@@ -303,7 +327,7 @@ def _setup(context):
     if any(not math.isfinite(v) for v in breakaway_values.values()):
         raise RuntimeError("breakaway parameters must be finite")
     residual_enabled = (
-        mode == "impedance"
+        mode in ("impedance", "torque")
         and _as_bool(
             LaunchConfiguration("gravity_error_compensation_enabled").perform(context)
         )
@@ -347,8 +371,15 @@ def _setup(context):
     )
     torque_scale = float(LaunchConfiguration("collision_torque_scale").perform(context))
     force_scale = float(LaunchConfiguration("collision_force_scale").perform(context))
-    if torque_scale <= 0.0 or force_scale <= 0.0:
-        raise RuntimeError("collision threshold scales must be > 0")
+    if not math.isfinite(torque_scale) or not math.isfinite(force_scale) or torque_scale <= 0.0 or force_scale <= 0.0:
+        raise RuntimeError("collision threshold scales must be finite and > 0")
+    if mode == "torque" and (torque_scale > 1.0 or force_scale > 1.0):
+        _LOG.warning(
+            "Torque mode: capping requested collision threshold scales at 1.0 "
+            "rather than increasing them for direct effort control"
+        )
+        torque_scale = min(torque_scale, 1.0)
+        force_scale = min(force_scale, 1.0)
 
     lower_tau_acc = _scaled(_array7(
         LaunchConfiguration("lower_torque_thresholds_acceleration").perform(context),
@@ -380,7 +411,11 @@ def _setup(context):
     if use_fake_hardware:
         mass_damping = [0.0] * 7
         if residual_enabled or breakaway_enabled:
-            raise RuntimeError("gravity_error_compensation_enabled requires real Franka model and measured torque interfaces")
+            raise RuntimeError(
+                "gravity_error_compensation_enabled/breakaway_enabled require "
+                "real Franka model and measured torque interfaces; disable both "
+                "explicitly with use_fake_hardware:=true"
+            )
 
     runtime_yaml = os.path.join(tempfile.gettempdir(), f"low_level_controllers_{os.getpid()}.yaml")
     with open(runtime_yaml, "w", encoding="utf-8") as f:
@@ -431,7 +466,8 @@ def _setup(context):
     ros__parameters:
       robot_type: "{robot_type}"
       arm_prefix: "{arm_prefix}"
-      command_topic: "{command_topic}"
+      command_topic: "{impedance_command_topic}"
+      command_mode: "{'torque' if mode == 'torque' else 'impedance'}"
       command_timeout: {command_timeout}
       stiffness: {_yaml_array(stiffness)}
       damping: {_yaml_array(damping)}
@@ -516,6 +552,7 @@ def _setup(context):
         "velocity": "low_level_joint_velocity_controller",
         "position": "low_level_joint_position_controller",
         "impedance": "low_level_joint_impedance_controller",
+        "torque": "low_level_joint_impedance_controller",
     }[mode]
 
     spawner = Node(
@@ -607,7 +644,7 @@ def generate_launch_description():
     default_cartesian_collision = "[20.0,20.0,20.0,25.0,25.0,25.0]"
 
     args = [
-        DeclareLaunchArgument("mode", default_value="impedance", description="velocity, position, or impedance"),
+        DeclareLaunchArgument("mode", default_value="impedance", description="velocity, position, impedance, or torque (compensated effort-only via impedance plugin)"),
         DeclareLaunchArgument("robot_ip", default_value="192.16.0.1"),
         DeclareLaunchArgument("robot_type", default_value="fr3"),
         DeclareLaunchArgument("arm_prefix", default_value=""),
@@ -638,8 +675,14 @@ def generate_launch_description():
             description="Seconds before readiness gates start logging missing conditions.",
         ),
         DeclareLaunchArgument("command_topic", default_value="/fr3/joint_commands"),
+        DeclareLaunchArgument("tau_command_topic", default_value="/fr3/tau_command",
+                              description="sensor_msgs/JointState with exactly seven effort values (name optional); mode=torque"),
+        DeclareLaunchArgument("torque_max_torque", default_value="[8.0,8.0,8.0,6.0,4.0,4.0,4.0]",
+                              description="Mandatory absolute joint torque limits [Nm] in torque mode"),
+        DeclareLaunchArgument("torque_delta_tau_max", default_value="0.2",
+                              description="Per-update joint torque slew limit [Nm] in torque mode (at 1 kHz)"),
         DeclareLaunchArgument("position_command_topic", default_value="/fr3/joint_position_commands"),
-        DeclareLaunchArgument("position_kp", default_value="1.0"),
+        DeclareLaunchArgument("position_kp", default_value="2.0"),
         DeclareLaunchArgument("dynamics_observation_topic", default_value="/fr3/dynamics_observation"),
         DeclareLaunchArgument("dynamics_publish_rate", default_value="200.0"),
         DeclareLaunchArgument("dynamics_acceleration_filter_tau", default_value="0.03"),
@@ -674,7 +717,7 @@ def generate_launch_description():
         DeclareLaunchArgument("gravity_error_max_torque", default_value="[8.0,8.0,8.0,8.0,8.0,8.0,8.0]"),
         DeclareLaunchArgument(
             "friction_compensation_enabled", default_value="true",
-            description="Enable calibrated friction feedforward in impedance mode when a fresh calibration is available.",
+            description="Enable calibrated friction feedforward in impedance and torque modes when a fresh calibration is available.",
         ),
         DeclareLaunchArgument(
             "friction_calibration_directory", default_value="",

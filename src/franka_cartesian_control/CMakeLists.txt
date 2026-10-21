@@ -53,7 +53,7 @@ endif()
 message(STATUS "qpOASES include: ${QPOASES_INCLUDE_DIR}")
 message(STATUS "qpOASES library: ${QPOASES_LIBRARY}")
 
-# Use a version-specific STATIC library so all four controller executables
+# Use a version-specific STATIC library so all controller executables
 # embed the matching Kinematics implementation. This prevents an old shared
 # libcartesian_control_common.so in a sourced ROS 2 overlay from overriding
 # the resolver and causing ABI mismatches/segmentation faults.
@@ -73,6 +73,11 @@ ament_target_dependencies(cartesian_control_common_v7
 add_executable(ik_velocity_controller src/ik_velocity_node.cpp)
 target_link_libraries(ik_velocity_controller cartesian_control_common_v7 Eigen3::Eigen)
 ament_target_dependencies(ik_velocity_controller rclcpp sensor_msgs geometry_msgs std_msgs)
+
+# Cartesian wrench / IK-based twist-force controller (no qpOASES dependency).
+add_executable(ik_force_controller src/ik_force_node.cpp)
+target_link_libraries(ik_force_controller cartesian_control_common_v7 Eigen3::Eigen)
+ament_target_dependencies(ik_force_controller rclcpp sensor_msgs geometry_msgs std_msgs)
 
 add_executable(qp_velocity_controller src/qp_velocity_node.cpp)
 target_include_directories(qp_velocity_controller PRIVATE ${QPOASES_INCLUDE_DIR})
@@ -110,6 +115,7 @@ set_target_properties(qp_velocity_controller lmpc_position_controller PROPERTIES
 install(TARGETS
   cartesian_control_common_v7
   ik_velocity_controller
+  ik_force_controller
   qp_velocity_controller
   pid_position_controller
   lmpc_position_controller
