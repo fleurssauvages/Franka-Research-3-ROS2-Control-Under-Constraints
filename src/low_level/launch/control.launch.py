@@ -265,8 +265,8 @@ def _setup(context):
     if not math.isfinite(position_kp) or position_kp < 0.0:
         raise RuntimeError("position_kp must be finite and nonnegative")
     command_timeout = float(LaunchConfiguration("command_timeout").perform(context))
-    load_gripper = _as_bool(LaunchConfiguration("load_gripper").perform(context))
     use_fake_hardware = _as_bool(LaunchConfiguration("use_fake_hardware").perform(context))
+    enable_gripper = _as_bool(LaunchConfiguration("enable_gripper").perform(context))
     joint_state_rate = int(LaunchConfiguration("joint_state_rate").perform(context))
     load_franka_robot_state_broadcaster = _as_bool(
         LaunchConfiguration("load_franka_robot_state_broadcaster").perform(context)
@@ -537,11 +537,12 @@ def _setup(context):
             "arm_prefix": arm_prefix,
             "namespace": namespace,
             "robot_ip": robot_ip,
-            "load_gripper": str(load_gripper).lower(),
+            # This is the official Franka Hand driver/URDF switch, not TCP
+            # selection. Cartesian kinematics always use Desk F_T_EE.
+            "load_gripper": str(enable_gripper).lower(),
             "use_fake_hardware": str(use_fake_hardware).lower(),
-            # The Cartesian PID/IK stack only requires joint states. The full
-            # Franka robot-state broadcaster runs at 1 kHz and is optional, so
-            # keep it disabled by default to reduce controller-manager RT load.
+            # Full robot state is required for Desk-based Cartesian TCP
+            # kinematics; joint-only workflows may leave it disabled.
             "load_franka_robot_state_broadcaster": str(load_franka_robot_state_broadcaster).lower(),
             "joint_state_rate": str(joint_state_rate),
             "controllers_yaml": runtime_yaml,
@@ -615,7 +616,10 @@ def _setup(context):
             )
         )
 
-    if load_gripper:
+
+    # The optional Franka Hand command adapter is independent of the
+    # Desk-defined EE frame. Only launch it when explicitly requested.
+    if enable_gripper:
         gripper = Node(
             package="low_level",
             executable="gripper_control_node",
@@ -636,6 +640,7 @@ def _setup(context):
         )
         actions.append(gripper)
 
+
     return actions
 
 
@@ -649,12 +654,27 @@ def generate_launch_description():
         DeclareLaunchArgument("robot_type", default_value="fr3"),
         DeclareLaunchArgument("arm_prefix", default_value=""),
         DeclareLaunchArgument("namespace", default_value=""),
-        DeclareLaunchArgument("load_gripper", default_value="true"),
         DeclareLaunchArgument("use_fake_hardware", default_value="false"),
+        DeclareLaunchArgument(
+            "enable_gripper", default_value="false",
+            description="Enable the Franka Hand driver and /fr3/gripper command adapter (requires a Franka Hand).",
+        ),
+        # Gripper command bridge parameters; unrelated to Desk EE TCP selection.
+        DeclareLaunchArgument("gripper_command_topic", default_value="/fr3/gripper"),
+        DeclareLaunchArgument("gripper_move_action", default_value="/franka_gripper/move"),
+        DeclareLaunchArgument("gripper_grasp_action", default_value="/franka_gripper/grasp"),
+        DeclareLaunchArgument("gripper_max_width", default_value="0.08"),
+        DeclareLaunchArgument("gripper_speed", default_value="0.1"),
+        DeclareLaunchArgument("gripper_force", default_value="40.0"),
+        DeclareLaunchArgument("gripper_epsilon_inner", default_value="0.005"),
+        DeclareLaunchArgument("gripper_epsilon_outer", default_value="0.005"),
+        DeclareLaunchArgument("gripper_command_deadband", default_value="0.001"),
+        DeclareLaunchArgument("gripper_close_uses_grasp", default_value="true"),
+
         DeclareLaunchArgument(
             "load_franka_robot_state_broadcaster",
             default_value="false",
-            description="Load the 1 kHz Franka full-state broadcaster. PID/IK velocity control does not require it.",
+            description="Load Franka robot state. Required by all Cartesian controllers to obtain the live Desk F_T_EE.",
         ),
         DeclareLaunchArgument(
             "joint_state_rate",
@@ -728,7 +748,7 @@ def generate_launch_description():
             description="Optional explicit calibration YAML. Empty selects the newest valid file in the calibration directory.",
         ),
         DeclareLaunchArgument(
-            "friction_calibration_max_age_hours", default_value="24.0",
+            "friction_calibration_max_age_hours", default_value="72.0",
             description="Maximum calibration age allowed for automatic friction compensation.",
         ),
         DeclareLaunchArgument(
@@ -781,15 +801,5 @@ def generate_launch_description():
         DeclareLaunchArgument("lower_force_thresholds_nominal", default_value=default_cartesian_collision),
         DeclareLaunchArgument("upper_force_thresholds_nominal", default_value=default_cartesian_collision),
 
-        DeclareLaunchArgument("gripper_command_topic", default_value="/fr3/gripper"),
-        DeclareLaunchArgument("gripper_move_action", default_value="/franka_gripper/move"),
-        DeclareLaunchArgument("gripper_grasp_action", default_value="/franka_gripper/grasp"),
-        DeclareLaunchArgument("gripper_max_width", default_value="0.08"),
-        DeclareLaunchArgument("gripper_speed", default_value="0.1"),
-        DeclareLaunchArgument("gripper_force", default_value="40.0"),
-        DeclareLaunchArgument("gripper_epsilon_inner", default_value="0.005"),
-        DeclareLaunchArgument("gripper_epsilon_outer", default_value="0.005"),
-        DeclareLaunchArgument("gripper_command_deadband", default_value="0.001"),
-        DeclareLaunchArgument("gripper_close_uses_grasp", default_value="true"),
     ]
     return LaunchDescription(args + [OpaqueFunction(function=_setup)])

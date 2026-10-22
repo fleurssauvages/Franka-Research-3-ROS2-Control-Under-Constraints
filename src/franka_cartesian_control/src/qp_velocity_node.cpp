@@ -21,14 +21,10 @@ QpVelocityNode::QpVelocityNode() : Node("qp_velocity_controller") {
   robot_type_ = declare_parameter<std::string>("robot_type", "fr3");
   arm_prefix_ = declare_parameter<std::string>("arm_prefix", "");
   root_link_ = declare_parameter<std::string>("root_link", "");
-  tip_link_ = declare_parameter<std::string>("tip_link", "auto");
-  declare_parameter<bool>("load_gripper", false);  // Bringup compatibility; URDF decides the tip.
   const auto default_joint_names = deriveJointNames(robot_type_, arm_prefix_);
   joint_names_ = declare_parameter<std::vector<std::string>>("joint_names", default_joint_names);
   if (joint_names_.size() != 7) throw std::runtime_error("joint_names must contain 7 entries");
   if (root_link_.empty()) root_link_ = deriveRootLink(robot_type_, arm_prefix_);
-  // tip_link=auto is resolved from the received /robot_description.
-  RCLCPP_INFO(get_logger(), "URDF_TIP_AUTO: requested tip_link=\"%s\"", tip_link_.c_str());
 
   frequency_ = declare_parameter<double>("frequency", 200.0);
   command_timeout_ = declare_parameter<double>("command_timeout", 0.1);
@@ -85,6 +81,12 @@ QpVelocityNode::QpVelocityNode() : Node("qp_velocity_controller") {
   }
 
   const auto robot_description_topic = declare_parameter<std::string>("robot_description_topic", "/robot_description");
+  const auto franka_state_topic = declare_parameter<std::string>(
+      "franka_robot_state_topic", "/franka_robot_state_broadcaster/robot_state");
+  const auto franka_state_timeout = declare_parameter<double>("franka_state_timeout", 0.5);
+  kinematics_.subscribeToFrankaState(*this, franka_state_topic, franka_state_timeout);
+  RCLCPP_INFO(get_logger(), "TCP: link8 kinematics + live Desk F_T_EE from %s (timeout %.3f s)",
+              franka_state_topic.c_str(), franka_state_timeout);
   const auto joint_state_topic = declare_parameter<std::string>("joint_state_topic", "/franka/joint_states");
   const auto twist_topic = declare_parameter<std::string>("twist_topic", "/fr3/cartesian_twist_command");
   const auto command_topic = declare_parameter<std::string>("joint_command_topic", "/fr3/joint_commands");
@@ -124,21 +126,20 @@ QpVelocityNode::QpVelocityNode() : Node("qp_velocity_controller") {
   timer_ = create_wall_timer(std::chrono::duration<double>(1.0 / frequency_),
                              std::bind(&QpVelocityNode::update, this));
   RCLCPP_INFO(get_logger(), "QP velocity controller: %s -> %s, %zu surface constraints, %.1f Hz",
-              root_link_.c_str(), (tip_link_ == "auto" ? "<auto from URDF>" : tip_link_.c_str()),
+              root_link_.c_str(), "Desk EE (via link8)",
               surface_planes_.size(), frequency_);
 }
 
 void QpVelocityNode::robotDescriptionCallback(const std_msgs::msg::String::SharedPtr msg) {
   if (kinematics_ready_) return;
   std::string error;
-  if (!kinematics_.initializeFromRobotDescription(msg->data, root_link_, tip_link_, &error)) {
+  if (!kinematics_.initializeFromRobotDescription(msg->data, root_link_, &error)) {
     RCLCPP_ERROR_THROTTLE(get_logger(), *get_clock(), 2000, "%s", error.c_str());
     return;
   }
-  tip_link_ = kinematics_.tipLink();
   kinematics_ready_ = true;
   RCLCPP_INFO(get_logger(), "FR3_KINEMATICS: initialized from /robot_description: %s -> %s",
-              root_link_.c_str(), tip_link_.c_str());
+              root_link_.c_str(), kinematics_.flangeLink().c_str());
 }
 
 void QpVelocityNode::jointStateCallback(const sensor_msgs::msg::JointState::SharedPtr msg) {
@@ -170,14 +171,24 @@ void QpVelocityNode::update() {
     q = q_; dq = dq_; twist = desired_twist_; last_twist = last_twist_time_steady_;
     have_state = have_joint_state_; have_twist = have_twist_;
   }
-  if (kinematics_ready_ && have_state && !ready_published_) {
+  if (kinematics_.tcpReady() && have_state && !ready_published_) {
     std_msgs::msg::Bool ready;
     ready.data = true;
     ready_pub_->publish(ready);
     ready_published_ = true;
     RCLCPP_INFO(get_logger(), "QP controller is operational (kinematics + joint state ready)");
   }
-  if (!kinematics_ready_ || !have_state) return;
+  if (!kinematics_.tcpReady() || !have_state) {
+    if (ready_published_) {
+      std_msgs::msg::Bool ready;
+      ready.data = false;
+      ready_pub_->publish(ready);
+      ready_published_ = false;
+    }
+    // Fail closed: the low-level command watchdog stops motion. Never control
+    // the flange as a substitute when Desk data are unavailable.
+    return;
+  }
 
   const auto t = now();
   const auto steady_now = std::chrono::steady_clock::now();

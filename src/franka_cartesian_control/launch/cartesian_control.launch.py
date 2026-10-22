@@ -63,8 +63,6 @@ def _setup(context):
     joint_limit_margin = float(LaunchConfiguration("joint_limit_margin").perform(context))
     repulsion_when_idle = _as_bool(LaunchConfiguration("repulsion_when_idle").perform(context))
     idle_safety_frequency = float(LaunchConfiguration("idle_safety_frequency").perform(context))
-    load_gripper = _as_bool(LaunchConfiguration("load_gripper").perform(context))
-    requested_tip_link = LaunchConfiguration("tip_link").perform(context).strip()
     low_level_mode = LaunchConfiguration("low_level_mode").perform(context).strip().lower()
     if low_level_mode == "auto":
         low_level_mode = "torque" if controller == "ik_force" else "velocity"
@@ -81,18 +79,16 @@ def _setup(context):
     node_parameters = {
         "robot_type": robot_type,
         "arm_prefix": arm_prefix,
-        "load_gripper": load_gripper,
         "twist_topic": twist_topic,
         "joint_state_topic": joint_state_topic,
         "joint_command_topic": joint_command_topic,
+        "franka_robot_state_topic": LaunchConfiguration("franka_robot_state_topic").perform(context),
+        "franka_state_timeout": float(LaunchConfiguration("franka_state_timeout").perform(context)),
         "frequency": frequency,
         "joint_limit_margin": joint_limit_margin,
         "repulsion_when_idle": repulsion_when_idle,
         "idle_safety_frequency": idle_safety_frequency,
     }
-    # Launch value overrides any stale YAML tip. auto requests strict URDF-based
-    # auto-resolution instead of trusting load_gripper or an obsolete YAML default.
-    node_parameters["tip_link"] = requested_tip_link or "auto"
 
     # One shared set of joint motion limits is applied to both IK and QP.
     # This avoids the previous hidden behavior where QP silently kept the YAML
@@ -142,9 +138,9 @@ def _setup(context):
                     "robot_type": robot_type,
                     "arm_prefix": arm_prefix,
                     "namespace": namespace,
-                    "load_gripper": LaunchConfiguration("load_gripper").perform(context),
                     "use_fake_hardware": LaunchConfiguration("use_fake_hardware").perform(context),
-                    "load_franka_robot_state_broadcaster": LaunchConfiguration("load_franka_robot_state_broadcaster").perform(context),
+                    "enable_gripper": LaunchConfiguration("enable_gripper").perform(context),
+                    "load_franka_robot_state_broadcaster": "true",  # Required for live Desk F_T_EE.
                     "joint_state_rate": LaunchConfiguration("joint_state_rate").perform(context),
                     "controller_start_delay": LaunchConfiguration("low_level_controller_start_delay").perform(context),
                     "readiness_stable_time": LaunchConfiguration("readiness_stable_time").perform(context),
@@ -236,6 +232,8 @@ def generate_launch_description():
         DeclareLaunchArgument("namespace", default_value=""),
         DeclareLaunchArgument("robot_ip", default_value="192.16.0.1"),
         DeclareLaunchArgument("start_low_level", default_value="true"),
+        DeclareLaunchArgument("enable_gripper", default_value="false",
+                              description="Start the Franka Hand driver and gripper command adapter."),
         DeclareLaunchArgument("high_level_start_delay", default_value="0.0",
                               description="Deprecated compatibility argument; startup now uses readiness detection"),
         DeclareLaunchArgument("readiness_stable_time", default_value="0.25",
@@ -307,15 +305,10 @@ def generate_launch_description():
         DeclareLaunchArgument("impedance_friction_max_compensation_torque",
                               default_value="[0.75,0.75,0.75,0.75,0.75,0.75,0.75]",
                               description="Per-joint friction feedforward caps [Nm]"),
-        DeclareLaunchArgument("load_gripper", default_value="false",
-                              description="Include Franka hand in URDF bringup; tip is resolved from /robot_description"),
-        DeclareLaunchArgument("tip_link", default_value="auto",
-                              description="auto resolves a seven-joint TCP from /robot_description; otherwise specify a URDF link"),
+        DeclareLaunchArgument("franka_robot_state_topic",
+                              default_value="/franka_robot_state_broadcaster/robot_state"),
+        DeclareLaunchArgument("franka_state_timeout", default_value="0.5"),
         DeclareLaunchArgument("use_fake_hardware", default_value="false"),
-        DeclareLaunchArgument(
-            "load_franka_robot_state_broadcaster", default_value="false",
-            description="Disable the optional 1 kHz full-state broadcaster by default for RT headroom",
-        ),
         DeclareLaunchArgument(
             "joint_state_rate", default_value="250",
             description="Joint-state publication rate in Hz (controller-manager stays at 1000 Hz)",

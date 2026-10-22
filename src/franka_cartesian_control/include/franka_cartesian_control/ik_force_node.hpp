@@ -45,7 +45,6 @@ class IkForceNode : public rclcpp::Node {
   std::chrono::steady_clock::time_point last_command_time_{};
 
   std::string root_link_;
-  std::string tip_link_;
   std::vector<std::string> joint_names_;
   Vector7d max_velocity_{Vector7d::Zero()};
   Vector7d max_joint_torque_{Vector7d::Zero()};

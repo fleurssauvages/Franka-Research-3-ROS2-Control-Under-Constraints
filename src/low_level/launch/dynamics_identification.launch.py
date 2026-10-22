@@ -72,10 +72,7 @@ def _setup(context):
     if motion_mode not in ('joint', 'qp'):
         raise RuntimeError("motion_mode must be 'joint' or 'qp'")
 
-    load_gripper = _as_bool(LaunchConfiguration('load_gripper').perform(context))
     expanded_robot_prefix = (f'{arm_prefix}_' if arm_prefix else '') + robot_type
-    requested_qp_tip_link = LaunchConfiguration('qp_tip_link').perform(context).strip()
-    qp_tip_link = requested_qp_tip_link or "auto"  # Resolve tip from /robot_description
 
     low_level_launch = os.path.join(
         get_package_share_directory('low_level'), 'launch', 'control.launch.py'
@@ -88,9 +85,9 @@ def _setup(context):
             'robot_type': robot_type,
             'arm_prefix': arm_prefix,
             'namespace': namespace,
-            'load_gripper': str(load_gripper).lower(),
             'use_fake_hardware': 'false',
-            'load_franka_robot_state_broadcaster': 'false',
+            'enable_gripper': LaunchConfiguration('enable_gripper').perform(context),
+            'load_franka_robot_state_broadcaster': str(motion_mode == 'qp').lower(),
             'joint_state_rate': LaunchConfiguration('joint_state_rate').perform(context),
             'command_topic': command_topic,
             'tracking_time_constant': LaunchConfiguration('low_level_tracking_time_constant').perform(context),
@@ -236,7 +233,8 @@ def _setup(context):
                 'robot_type': robot_type,
                 'arm_prefix': arm_prefix,
                 'root_link': f'{expanded_robot_prefix}_link0',
-                'tip_link': qp_tip_link,
+                'franka_robot_state_topic': LaunchConfiguration('franka_robot_state_topic').perform(context),
+                'franka_state_timeout': float(LaunchConfiguration('franka_state_timeout').perform(context)),
                 'twist_topic': twist_topic,
                 'joint_state_topic': joint_state_topic,
                 'joint_command_topic': command_topic,
@@ -301,13 +299,11 @@ def generate_launch_description():
         DeclareLaunchArgument('robot_type', default_value='fr3'),
         DeclareLaunchArgument('arm_prefix', default_value=''),
         DeclareLaunchArgument('namespace', default_value=''),
-        DeclareLaunchArgument('load_gripper', default_value='false'),
-        DeclareLaunchArgument(
-            'qp_tip_link', default_value='auto',
-            description=(
-                'QP TCP frame. auto resolves the tip from the loaded /robot_description.'
-            ),
-        ),
+        DeclareLaunchArgument('enable_gripper', default_value='false',
+                              description='Start the Franka Hand driver and gripper command adapter.'),
+        DeclareLaunchArgument('franka_robot_state_topic',
+                              default_value='/franka_robot_state_broadcaster/robot_state'),
+        DeclareLaunchArgument('franka_state_timeout', default_value='0.5'),
         DeclareLaunchArgument('joint_state_rate', default_value='250'),
         DeclareLaunchArgument('joint_state_topic', default_value='/franka/joint_states'),
         DeclareLaunchArgument('command_topic', default_value='/fr3/joint_commands'),
@@ -322,7 +318,7 @@ def generate_launch_description():
             description="Existing experiment motion source: 'joint' or 'qp'",
         ),
         DeclareLaunchArgument(
-            'run_motion', default_value='false',
+            'run_motion', default_value='true',
             description='Must be explicitly true to command identification motion',
         ),
         DeclareLaunchArgument('command_rate', default_value='100.0'),

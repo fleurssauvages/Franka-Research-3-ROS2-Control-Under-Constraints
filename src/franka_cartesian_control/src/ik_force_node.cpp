@@ -45,8 +45,6 @@ IkForceNode::IkForceNode() : Node("ik_force_controller") {
   const auto robot_type = declare_parameter<std::string>("robot_type", "fr3");
   const auto arm_prefix = declare_parameter<std::string>("arm_prefix", "");
   root_link_ = declare_parameter<std::string>("root_link", "");
-  tip_link_ = declare_parameter<std::string>("tip_link", "auto");
-  declare_parameter<bool>("load_gripper", false);
   joint_names_ = declare_parameter<std::vector<std::string>>(
       "joint_names", deriveJointNames(robot_type, arm_prefix));
   if (joint_names_.size() != kDof) {
@@ -98,6 +96,12 @@ IkForceNode::IkForceNode() : Node("ik_force_controller") {
 
   const auto robot_description_topic = declare_parameter<std::string>(
       "robot_description_topic", "/robot_description");
+  const auto franka_state_topic = declare_parameter<std::string>(
+      "franka_robot_state_topic", "/franka_robot_state_broadcaster/robot_state");
+  const auto franka_state_timeout = declare_parameter<double>("franka_state_timeout", 0.5);
+  kinematics_.subscribeToFrankaState(*this, franka_state_topic, franka_state_timeout);
+  RCLCPP_INFO(get_logger(), "TCP: link8 kinematics + live Desk F_T_EE from %s (timeout %.3f s)",
+              franka_state_topic.c_str(), franka_state_timeout);
   const auto joint_state_topic = declare_parameter<std::string>(
       "joint_state_topic", "/franka/joint_states");
   const auto twist_topic = declare_parameter<std::string>(
@@ -130,7 +134,7 @@ IkForceNode::IkForceNode() : Node("ik_force_controller") {
   timer_ = create_wall_timer(std::chrono::duration<double>(1.0 / frequency_),
                              std::bind(&IkForceNode::update, this));
   RCLCPP_INFO(get_logger(), "IK force (%s): %s -> %s, output: %s (JointState.effort)",
-              input_mode.c_str(), root_link_.c_str(), tip_link_.c_str(), torque_topic.c_str());
+              input_mode.c_str(), root_link_.c_str(), "Desk EE (via link8)", torque_topic.c_str());
 }
 
 bool IkForceNode::frameIsRoot(const std::string& frame) const {
@@ -142,14 +146,13 @@ bool IkForceNode::frameIsRoot(const std::string& frame) const {
 void IkForceNode::robotDescriptionCallback(const std_msgs::msg::String::SharedPtr msg) {
   if (kinematics_ready_) return;
   std::string error;
-  if (!kinematics_.initializeFromRobotDescription(msg->data, root_link_, tip_link_, &error)) {
+  if (!kinematics_.initializeFromRobotDescription(msg->data, root_link_, &error)) {
     RCLCPP_ERROR_THROTTLE(get_logger(), *get_clock(), 2000, "%s", error.c_str());
     return;
   }
-  tip_link_ = kinematics_.tipLink();
   kinematics_ready_ = true;
   RCLCPP_INFO(get_logger(), "IK force kinematics initialized: %s -> %s",
-              root_link_.c_str(), tip_link_.c_str());
+              root_link_.c_str(), kinematics_.flangeLink().c_str());
 }
 
 void IkForceNode::jointStateCallback(const sensor_msgs::msg::JointState::SharedPtr msg) {
@@ -209,13 +212,19 @@ void IkForceNode::update() {
   const auto steady_now = std::chrono::steady_clock::now();
   const bool state_fresh = have_state &&
       std::chrono::duration<double>(steady_now - state_time).count() <= joint_state_timeout_;
-  if (kinematics_ready_ && state_fresh && !ready_published_) {
+  if (kinematics_.tcpReady() && state_fresh && !ready_published_) {
     std_msgs::msg::Bool ready;
     ready.data = true;
     ready_pub_->publish(ready);
     ready_published_ = true;
   }
-  if (!kinematics_ready_ || !state_fresh || !have_command) {
+  if (!kinematics_.tcpReady() || !state_fresh || !have_command) {
+    if (ready_published_ && (!kinematics_.tcpReady() || !state_fresh)) {
+      std_msgs::msg::Bool ready;
+      ready.data = false;
+      ready_pub_->publish(ready);
+      ready_published_ = false;
+    }
     // Do not keep a torque lease alive without valid feedback and a command.
     return;
   }

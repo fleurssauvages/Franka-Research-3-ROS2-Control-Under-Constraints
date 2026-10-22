@@ -48,12 +48,12 @@ def _setup(context):
             "namespace": LaunchConfiguration("namespace").perform(context),
             "robot_ip": LaunchConfiguration("robot_ip").perform(context),
             "start_low_level": LaunchConfiguration("start_low_level").perform(context),
+            "enable_gripper": LaunchConfiguration("enable_gripper").perform(context),
             "low_level_mode": LaunchConfiguration("low_level_mode").perform(context),
-            "load_gripper": LaunchConfiguration("load_gripper").perform(context),
-            "tip_link": LaunchConfiguration("tip_link").perform(context),
             "use_fake_hardware": LaunchConfiguration("use_fake_hardware").perform(context),
-            "load_franka_robot_state_broadcaster": LaunchConfiguration("load_franka_robot_state_broadcaster").perform(context),
             "joint_state_rate": LaunchConfiguration("joint_state_rate").perform(context),
+            "franka_robot_state_topic": LaunchConfiguration("franka_robot_state_topic").perform(context),
+            "franka_state_timeout": LaunchConfiguration("franka_state_timeout").perform(context),
             "readiness_stable_time": LaunchConfiguration("readiness_stable_time").perform(context),
             "readiness_warn_after": LaunchConfiguration("readiness_warn_after").perform(context),
             "low_level_tracking_time_constant": LaunchConfiguration("low_level_tracking_time_constant").perform(context),
@@ -82,15 +82,12 @@ def _setup(context):
         }.items(),
     )
 
-    load_gripper = LaunchConfiguration("load_gripper").perform(context).strip().lower() in (
-        "1", "true", "yes", "on"
-    )
-    requested_tip_link = LaunchConfiguration("tip_link").perform(context).strip()
     controller_parameters = {
         "robot_type": LaunchConfiguration("robot_type").perform(context),
         "arm_prefix": LaunchConfiguration("arm_prefix").perform(context),
-        "load_gripper": load_gripper,
         "joint_state_topic": LaunchConfiguration("joint_state_topic").perform(context),
+        "franka_robot_state_topic": LaunchConfiguration("franka_robot_state_topic").perform(context),
+        "franka_state_timeout": float(LaunchConfiguration("franka_state_timeout").perform(context)),
         "desired_pose_topic": LaunchConfiguration("desired_pose_topic").perform(context),
         "twist_topic": LaunchConfiguration("twist_topic").perform(context),
         "current_pose_topic": LaunchConfiguration("current_pose_topic").perform(context),
@@ -100,7 +97,6 @@ def _setup(context):
         "command_timeout": float(LaunchConfiguration("pose_watchdog_timeout").perform(context)),
     }
 
-    controller_parameters["tip_link"] = requested_tip_link or "auto"  # URDF auto resolution
 
     if position_controller == "pid":
         controller_parameters.update({
@@ -260,16 +256,13 @@ def generate_launch_description():
         DeclareLaunchArgument("namespace", default_value=""),
         DeclareLaunchArgument("robot_ip", default_value="192.16.0.1"),
         DeclareLaunchArgument("start_low_level", default_value="true"),
+        DeclareLaunchArgument("enable_gripper", default_value="false",
+                              description="Start the Franka Hand driver and gripper command adapter."),
         DeclareLaunchArgument("low_level_mode", default_value="velocity"),
-        DeclareLaunchArgument("load_gripper", default_value="false",
-                              description="Include Franka hand in URDF bringup; Cartesian tip is determined from /robot_description"),
-        DeclareLaunchArgument("tip_link", default_value="auto",
-                              description="auto resolves the 7-DOF TCP from /robot_description; otherwise specify a link name"),
+        DeclareLaunchArgument("franka_robot_state_topic",
+                              default_value="/franka_robot_state_broadcaster/robot_state"),
+        DeclareLaunchArgument("franka_state_timeout", default_value="0.5"),
         DeclareLaunchArgument("use_fake_hardware", default_value="false"),
-        DeclareLaunchArgument(
-            "load_franka_robot_state_broadcaster", default_value="false",
-            description="Disable the optional 1 kHz Franka full-state broadcaster by default for RT headroom",
-        ),
         DeclareLaunchArgument(
             "joint_state_rate", default_value="250",
             description="Joint-state publication rate in Hz (controller-manager stays at 1000 Hz)",

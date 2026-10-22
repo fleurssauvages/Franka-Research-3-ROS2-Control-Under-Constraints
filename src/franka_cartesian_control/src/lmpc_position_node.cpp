@@ -47,13 +47,10 @@ LmpcPositionNode::LmpcPositionNode() : Node("lmpc_position_controller") {
   robot_type_ = declare_parameter<std::string>("robot_type", "fr3");
   arm_prefix_ = declare_parameter<std::string>("arm_prefix", "");
   root_link_ = declare_parameter<std::string>("root_link", "");
-  tip_link_ = declare_parameter<std::string>("tip_link", "auto");
-  declare_parameter<bool>("load_gripper", false);  // Bringup compatibility; URDF decides the tip.
   joint_names_ = declare_parameter<std::vector<std::string>>(
       "joint_names", deriveJointNames(robot_type_, arm_prefix_));
   if (joint_names_.size() != 7) throw std::runtime_error("joint_names must contain 7 entries");
   if (root_link_.empty()) root_link_ = deriveRootLink(robot_type_, arm_prefix_);
-  // tip_link=auto is resolved from the received /robot_description.
 
   frequency_ = declare_parameter<double>("frequency", 50.0);
   command_timeout_ = declare_parameter<double>("command_timeout", 0.50);
@@ -123,6 +120,12 @@ LmpcPositionNode::LmpcPositionNode() : Node("lmpc_position_controller") {
 
   const auto robot_description_topic =
       declare_parameter<std::string>("robot_description_topic", "/robot_description");
+  const auto franka_state_topic = declare_parameter<std::string>(
+      "franka_robot_state_topic", "/franka_robot_state_broadcaster/robot_state");
+  const auto franka_state_timeout = declare_parameter<double>("franka_state_timeout", 0.5);
+  kinematics_.subscribeToFrankaState(*this, franka_state_topic, franka_state_timeout);
+  RCLCPP_INFO(get_logger(), "TCP: link8 kinematics + live Desk F_T_EE from %s (timeout %.3f s)",
+              franka_state_topic.c_str(), franka_state_timeout);
   const auto joint_state_topic =
       declare_parameter<std::string>("joint_state_topic", "/franka/joint_states");
   const auto desired_pose_topic =
@@ -160,7 +163,7 @@ LmpcPositionNode::LmpcPositionNode() : Node("lmpc_position_controller") {
 
   RCLCPP_INFO(get_logger(),
               "LMPC first-order velocity model: %s -> %s at %.1f Hz, horizon=%d, tau=%.3f s, twist_regularization=%.4f, delta_twist_weight=%.4f, watchdog=%.3f s, obstacle meshes=%zu",
-              root_link_.c_str(), (tip_link_ == "auto" ? "<auto from URDF>" : tip_link_.c_str()),
+              root_link_.c_str(), "Desk EE (via link8)",
               frequency_, horizon_,
               velocity_tracking_time_constant_, regularization_gain_,
               delta_twist_weight_, command_timeout_, meshes_.size());
@@ -169,14 +172,13 @@ LmpcPositionNode::LmpcPositionNode() : Node("lmpc_position_controller") {
 void LmpcPositionNode::robotDescriptionCallback(const std_msgs::msg::String::SharedPtr msg) {
   if (kinematics_ready_) return;
   std::string error;
-  if (!kinematics_.initializeFromRobotDescription(msg->data, root_link_, tip_link_, &error)) {
+  if (!kinematics_.initializeFromRobotDescription(msg->data, root_link_, &error)) {
     RCLCPP_ERROR_THROTTLE(get_logger(), *get_clock(), 2000, "%s", error.c_str());
     return;
   }
-  tip_link_ = kinematics_.tipLink();
   kinematics_ready_ = true;
   RCLCPP_INFO(get_logger(), "FR3_KINEMATICS: initialized from /robot_description: %s -> %s",
-              root_link_.c_str(), tip_link_.c_str());
+              root_link_.c_str(), kinematics_.flangeLink().c_str());
 }
 
 void LmpcPositionNode::jointStateCallback(const sensor_msgs::msg::JointState::SharedPtr msg) {

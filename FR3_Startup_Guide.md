@@ -287,7 +287,7 @@ ros2 launch low_level dynamics_identification.launch.py \
   run_motion:=true
 ```
 
-The reference README also uses `load_gripper:=false` for identification. Set `load_gripper` consistently with the installed hardware and the experiment's intended robot description; consult the launch options before changing the configuration.
+Set gripper loading consistently with the installed hardware and the experiment's intended robot description; consult the launch options before changing the configuration.
 
 The output is stored in the workspace calibration directory, typically:
 
@@ -387,7 +387,7 @@ ros2 topic echo --once /low_level_joint_impedance_controller/ready
 ros2 topic echo --once /low_level_joint_velocity_controller/ready
 ```
 
-When `load_gripper:=true` (the low-level launch default), the launch also starts the **gripper control node**.
+When `enable_gripper:=true` (the low-level launch default), the launch also starts the **gripper control node**.
 
 **To stop:** terminate any command publisher first, then press **Ctrl+C** in the low-level launch terminal and verify the controller has stopped.
 
@@ -588,7 +588,19 @@ The orientation fields form a quaternion (`x`, `y`, `z`, `w`), **not Euler angle
 
 ## 8. Gripper control
 
-When the gripper is configured and `load_gripper:=true`, the low-level launch starts its gripper node. The control topic is:
+Gripper actuation is **disabled by default** in all low-level and Cartesian control launch files. To enable it, set `enable_gripper:=true` when launching the controller.
+
+When enabled, the launch automatically starts the official Franka Hand driver and the project's `gripper_control_node`.
+
+**Example — Enable gripper control:**
+
+```bash
+ros2 launch franka_cartesian_control cartesian_control.launch.py \
+    controller:=qp \
+    enable_gripper:=true
+```
+
+The gripper is controlled through the following ROS 2 topic:
 
 ```text
 Topic: /fr3/gripper
@@ -596,22 +608,28 @@ Type:  std_msgs/msg/Float32
 Range: 0.0 to 1.0
 ```
 
-- `0.0` = closed (0 m requested width).
+- `0.0` = fully closed (0 m requested width).
 - `1.0` = fully open (normally approximately 0.08 m).
 
-Open:
+**Open the gripper:**
 
 ```bash
 ros2 topic pub --once /fr3/gripper std_msgs/msg/Float32 '{data: 1.0}'
 ```
 
-Close:
+**Close the gripper:**
 
 ```bash
 ros2 topic pub --once /fr3/gripper std_msgs/msg/Float32 '{data: 0.0}'
 ```
 
-The default closing behavior may use the Franka **Grasp** action, while opening uses **Move**. Make sure fingers are clear before testing.
+The default closing behavior may use the Franka **Grasp** action, while opening uses the **Move** action. Ensure the fingers and surrounding workspace are clear before commanding movement.
+
+### End-effector configuration
+
+Gripper actuation is independent of Cartesian kinematics. All Cartesian controllers automatically obtain the end-effector transformation (`F_T_EE`) from Franka Desk through the live robot state, regardless of the `enable_gripper` setting.
+
+**Important:** `enable_gripper:=true` is intended for the official Franka Hand. Custom or third-party grippers configured in Desk require their own ROS drivers. Configuring an end effector in Desk does not automatically enable ROS gripper actuation.
 
 ---
 

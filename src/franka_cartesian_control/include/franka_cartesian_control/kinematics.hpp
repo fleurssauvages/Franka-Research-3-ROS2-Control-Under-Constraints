@@ -1,6 +1,11 @@
 #pragma once
 
 #include <array>
+#include <chrono>
+#include <mutex>
+
+#include <franka_msgs/msg/franka_robot_state.hpp>
+#include <rclcpp/rclcpp.hpp>
 #include <memory>
 #include <string>
 #include <vector>
@@ -22,18 +27,31 @@ using Matrix67d = Eigen::Matrix<double, 6, 7>;
 
 class Kinematics {
  public:
-  bool initialize(const std::string& urdf, const std::string& root_link,
-                  const std::string& tip_link, std::string* error);
+  // Always solve the standard seven-joint arm up to <robot_type>_link8.
   bool initializeFromRobotDescription(const std::string& urdf, const std::string& root_link,
-                  const std::string& tip_link, std::string* error);
+                                      std::string* error);
+  // Use the live flange->EE frame from the Franka robot-state broadcaster.
+  void subscribeToFrankaState(rclcpp::Node& node, const std::string& topic,
+                              double timeout_seconds);
+  bool tcpReady() const;
   bool ready() const { return ready_; }
-  const std::string& tipLink() const { return resolved_tip_link_; }
+  const std::string& flangeLink() const { return resolved_flange_link_; }
+  // Output Jacobian twist [linear; angular] and pose at the Desk-defined EE.
   bool compute(const Vector7d& q, Matrix67d& jacobian,
                Eigen::Isometry3d& root_T_tip) const;
 
  private:
+  void frankaStateCallback(const franka_msgs::msg::FrankaRobotState::SharedPtr msg);
+  bool freshToolTransform(Eigen::Isometry3d& flange_T_ee) const;
+
+  mutable std::mutex tool_mutex_;
+  bool have_tool_transform_{false};
+  Eigen::Isometry3d flange_T_ee_{Eigen::Isometry3d::Identity()};
+  std::chrono::steady_clock::time_point last_tool_update_{};
+  double state_timeout_seconds_{0.5};
+  rclcpp::Subscription<franka_msgs::msg::FrankaRobotState>::SharedPtr franka_state_sub_;
   bool ready_{false};
-  std::string resolved_tip_link_;
+  std::string resolved_flange_link_;
   KDL::Chain chain_;
   std::unique_ptr<KDL::ChainJntToJacSolver> jac_solver_;
   std::unique_ptr<KDL::ChainFkSolverPos_recursive> fk_solver_;

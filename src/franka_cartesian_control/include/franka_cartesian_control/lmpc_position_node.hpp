@@ -78,7 +78,6 @@ class LmpcPositionNode : public rclcpp::Node {
   std::string robot_type_;
   std::string arm_prefix_;
   std::string root_link_;
-  std::string tip_link_;
   std::vector<std::string> joint_names_;
 
   double frequency_{50.0};

@@ -26,7 +26,7 @@ The stack is split into three ROS 2 packages:
 
 low_level/
 
-    Hardware-facing ros2_control controllers, gripper control,
+    Hardware-facing ros2_control controllers, optional standalone gripper support,
 
     collision configuration, dynamics observation and calibration.
 
@@ -100,82 +100,44 @@ TwistStamped -> IK/QP -> JointState -> low_level -> FR3
 
 ```
 
-### Kinematic tip frame and gripper flag
+### Cartesian frame: live Franka Desk end effector
 
-Franka bringup generates `/robot_description` with the selected `load_gripper`
+All Cartesian controllers (IK velocity, QP velocity, IK force, PID position,
+LMPC position) use **the same frame**: the end-effector frame reported by
+Franka RobotState. If you want to change the effector / gripper, change it in the Desk app.
 
-setting. The `controller_manager` uses that description for hardware interfaces,
+1. KDL builds the seven-DOF arm chain from `<robot_type>_link0` to
+   `<robot_type>_link8` using the standard `/robot_description`.
+2. The Franka robot-state broadcaster publishes
+   `/franka_robot_state_broadcaster/robot_state`. Its `f_t_ee.pose` field is the
+   live flange-to-EE transform (which reflects the EE configuration on the robot).
+3. The shared kinematics computes `root_T_EE = root_T_link8 * F_T_EE`, and
+   shifts the translational Jacobian to the EE origin. IK, QP, wrench mapping,
+   surface constraints and pose feedback use these calculated EE quantities.
+4. The controllers **do not become ready** if the Franka state is missing,
+   invalid, or stale (default timeout: 0.5 s). No silent flange fallback.
 
-but **does not select a Cartesian KDL endpoint for IK/QP/PID/LMPC**.
+The standard Franka ROS description still contains `fr3_link8` and the
+seven arm joints. **Franka Desk does not change the URDF**, add a tool mesh,
+or start a gripper-control driver. This stack disables the standard Franka
+Hand bringup path internally while leaving installed `franka_bringup` and
+`libfranka` untouched.
 
-All four Cartesian controllers resolve their tip **after receiving the actual
+Desk must be configured with the *EE frame* intended as the control point.
+Mass, center of mass, and inertia alone do **not** specify the TCP offset.
 
-`/robot_description`**, not by guessing from `load_gripper`:
-
-| Setting | Behavior |
-|---|---|
-| `load_gripper:=false` | Franka bringup omits the hand; the controllers select an available seven-joint endpoint in the published URDF. |
-| `load_gripper:=true` | Franka bringup includes the hand; the controllers use its TCP if the published URDF contains a valid seven-joint TCP frame. |
-| `tip_link:=<frame>` | Explicit frame is required to exist in the URDF and to have exactly seven actuated joints from the root. |
-| `tip_link:=auto` (default) | Auto-resolve using available TCP/EE/flange frames in the URDF; fail rather than guess if ambiguous. |
-
-The launch-safe `tip_link:=auto` value is resolved only after a valid `/robot_description` is received. It does not treat `auto` as a literal URDF link. A controller using this version logs `URDF_TIP_AUTO_V7` with the requested value at startup. If that marker is absent, rebuild the ROS 2 workspace and check the active installation before testing motion.
-
-From the supplied official `franka_description` Xacro, the ungripped FR3
-always includes `fr3_link8` (connected by the fixed `fr3_joint8`). When
-`hand:=true`, the Franka hand adds `fr3_hand_tcp` after the flange. The
-corresponding Franka SRDF declares `link8` as the arm tip without a hand
-and `hand_tcp` when a Franka hand is attached. Automatic resolution checks
-which of these links actually exists in the received URDF.
-The resolver prefers an available `_hand_tcp`, `_tcp`, `_ee`, `_tool0`,
-`_link8`, or `_flange` frame (in that order). If none exists and the
-URDF contains exactly one seven-DOF descendant, it uses that frame.
-Otherwise, set `tip_link` explicitly to the physically intended TCP.
-This is essential because different TCP offsets change the Jacobian and
-Cartesian workspace/surface constraint calculations.
+Inspect the active frame while **no motion is commanded**:
 
 ```bash
-
-# Use the endpoint present in Franka's loaded robot description
-
-ros2 launch franka_cartesian_control position_control.launch.py \\
-
-  load_gripper:=false tip_link:=auto
-
-# Force a specific TCP only after confirming it exists in /robot_description
-
-ros2 launch franka_cartesian_control position_control.launch.py \\
-
-  load_gripper:=false tip_link:=fr3_link8
-
+ros2 control list_controllers
+ros2 topic echo /franka_robot_state_broadcaster/robot_state --once --field f_t_ee
+ros2 topic echo /franka_robot_state_broadcaster/robot_state --once --field o_t_ee
 ```
 
-Startup prints the **resolved** chain only after `/robot_description` has
-been parsed, for example `Kinematics initialized from /robot_description:
-fr3_link0 -> fr3_link8`. A wrong explicit tip produces a clear error and
-prevents readiness, rather than silently falling back.
-**v7.1 linker compatibility fix:** The static `cartesian_control_common_v7`
-library now exports both `Kinematics::initialize` (used by older controller
-source files) and `Kinematics::initializeFromRobotDescriptionV7` (used by v7
-source files). Both call the same URDF-aware resolver; neither treats `auto`
-as a literal link name. This repairs undefined-reference linker errors when
-older controller translation units are built alongside v7 kinematics.
-Use the complete package contents together, and verify both symbols:
-
-```bash
-
-nm -C ~/alexis_ws/build/franka_cartesian_control/libcartesian_control_common_v7.a | grep -E 'Kinematics::(initialize|initializeFromRobotDescriptionV7)'
-
-```
-
-The startup marker `URDF_TIP_AUTO_V7` alone proves only the node was updated,
-not that its kinematics library was updated: v6 had exactly that weakness.
-Do a clean build and source **only the necessary overlays** before launching.
-If `auto` is still interpreted as a literal URDF frame, the running
-
-installation is not this v7 build.
-
----
+The updated kinematics prints `FRANKA_DESK_EE: received live F_T_EE...` after a
+valid state is first received. An old `URDF_TIP_AUTO` startup message indicates
+that an **older binary** is still running; stop the process, rebuild, and
+check `ros2 pkg prefix franka_cartesian_control` before testing motion.
 
 ## 2. Safety
 
@@ -559,7 +521,7 @@ ROBOT_IP=192.16.0.1
 | `/fr3/cartesian_pose_command` | `geometry_msgs/msg/PoseStamped` | user -> PID/LMPC | Desired TCP pose |
 | `/fr3/cartesian_pose` | `geometry_msgs/msg/PoseStamped` | PID/LMPC -> user | Current TCP pose |
 | `/fr3/lmpc_obstacle_mesh` | `visualization_msgs/msg/Marker` | user -> LMPC | Runtime triangle-mesh obstacle |
-| `/fr3/gripper` | `std_msgs/msg/Float32` | user -> gripper node | Gripper opening ratio |
+| `/fr3/gripper` | `std_msgs/msg/Float32` | user -> separate gripper node (if configured) | Optional, independent Franka Hand actuation; not started by this arm stack |
 | `/fr3/dynamics_observation` | `std_msgs/msg/Float64MultiArray` | observer -> calibration | Dynamics data |
 
 Cartesian pose commands and LMPC obstacle meshes are expected in the controller root frame, normally `fr3_link0`. No TF transform is applied by these nodes.
@@ -840,7 +802,7 @@ Example: select the newest valid schema-v4 file:
 
 ros2 launch low_level control.launch.py \\
 
-  mode:=impedance load_gripper:=false \\
+  mode:=impedance \\
 
   friction_stribeck_enabled:=true friction_compensation_scale:=0.3
 
@@ -852,7 +814,7 @@ Or select a specific file:
 
 ros2 launch low_level control.launch.py \\
 
-  mode:=impedance load_gripper:=false \\
+  mode:=impedance \\
 
   friction_calibration_file:=$HOME/alexis_ws/data/calibration/friction_calibration_20261008_135505.yaml
 
@@ -882,7 +844,7 @@ For the high-level position controller (which forwards these options):
 
 ros2 launch franka_cartesian_control position_control.launch.py \\
 
-  low_level_mode:=impedance load_gripper:=false \\
+  low_level_mode:=impedance \\
 
   impedance_friction_stribeck_enabled:=true \\
 
@@ -1515,73 +1477,19 @@ The position launch propagates the documented impedance-friction options using t
 
 ---
 
-# 16. Gripper control
+# 16. Gripper actuation (separate from Desk EE kinematics)
 
-The gripper node is started automatically by `low_level/control.launch.py` when:
+These arm and Cartesian launches **never automatically start** a Franka Hand
+driver or the project's `gripper_control_node`. The end-effector frame used
+for Cartesian kinematics is obtained from Desk through Franka's live robot
+state; this does **not** provide ROS commands to open or close fingers.
 
-```text
-
-load_gripper:=true
-
-```
-
-Default command topic:
-
-```text
-
-/fr3/gripper
-
-std_msgs/msg/Float32
-
-```
-
-The value is a ratio in `[0,1]`:
-
-```text
-
-0.0 -> 0 m width, closed
-
-1.0 -> max_width, normally 0.08 m
-
-```
-
-Open:
-
-```bash
-
-ros2 topic pub --once /fr3/gripper std_msgs/msg/Float32 "{data: 1.0}"
-
-```
-
-Close:
-
-```bash
-
-ros2 topic pub --once /fr3/gripper std_msgs/msg/Float32 "{data: 0.0}"
-
-```
-
-When the commanded ratio decreases and `gripper_close_uses_grasp:=true`, the node uses the Franka `Grasp` action. Opening uses the `Move` action.
-
-Main options:
-
-```text
-
-gripper_max_width        = 0.08 m
-
-gripper_speed            = 0.1 m/s
-
-gripper_force            = 40 N
-
-gripper_epsilon_inner    = 0.005 m
-
-gripper_epsilon_outer    = 0.005 m
-
-gripper_command_deadband = 0.001
-
-gripper_close_uses_grasp = true
-
-```
+The standalone `low_level` package still contains `gripper_control_node`
+for installations that run a compatible Franka Gripper action server
+separately. It is **not** activated by the control/identification launch
+files. Users requiring gripper actuation must configure the appropriate
+gripper-specific ROS launch and verify the corresponding action servers;
+non-Franka grippers need their own drivers.
 
 ---
 
@@ -1777,13 +1685,13 @@ reliability before enabling excitation; a stale observer reading aborts the run.
 
 ros2 launch low_level dynamics_identification.launch.py \\
 
-  load_gripper:=false run_motion:=false
+  run_motion:=false
 
 # Physical sequential joint sweep; check workspace clearance first
 
 ros2 launch low_level dynamics_identification.launch.py \\
 
-  load_gripper:=false motion_mode:=joint run_motion:=true
+  motion_mode:=joint run_motion:=true
 
 ```
 
@@ -1879,7 +1787,7 @@ motion_mode:=joint
 
 for the controller friction YAML.
 
-For `motion_mode:=qp`, the QP controller resolves its tip from the loaded `/robot_description`, irrespective of the `load_gripper` flag. Use `qp_tip_link:=...` to select an explicit TCP present in that URDF.
+For `motion_mode:=qp`, the QP controller uses the live Desk end-effector transform (`F_T_EE`), like the other Cartesian controllers. The Franka robot-state broadcaster is started for QP identification; a fresh state is required before motion.
 
 ---
 
@@ -1892,7 +1800,6 @@ For `motion_mode:=qp`, the QP controller resolves its tip from the loaded `/robo
 | `mode` | `impedance` |
 | `robot_ip` | `192.16.0.1` |
 | `robot_type` | `fr3` |
-| `load_gripper` | `true` |
 | `use_fake_hardware` | `false` |
 | `load_franka_robot_state_broadcaster` | `false` |
 | `joint_state_rate` | `250` |
@@ -1905,7 +1812,7 @@ For `motion_mode:=qp`, the QP controller resolves its tip from the loaded `/robo
 | `friction_calibration_max_age_hours` | `24.0` |
 | `configure_collision_behavior` | `false` |
 
-The optional 1 kHz Franka full-state broadcaster is disabled by default to leave more real-time headroom.
+The Franka full-state broadcaster can be disabled for joint-only workflows. Every Cartesian launch in this project enables it because a live Desk `F_T_EE` is required.
 
 ## 21.2 `franka_cartesian_control/cartesian_control.launch.py`
 
@@ -1958,7 +1865,6 @@ The optional 1 kHz Franka full-state broadcaster is disabled by default to leave
 | `friction_smoothing_velocity` | `0.01` |
 | `observer_publish_rate` | `200.0` |
 | `acceleration_filter_tau` | `0.02` |
-| `load_gripper` | `false` |
 
 ---
 

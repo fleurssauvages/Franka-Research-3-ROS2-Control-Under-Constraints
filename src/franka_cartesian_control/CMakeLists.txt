@@ -12,6 +12,7 @@ find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
+find_package(franka_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(visualization_msgs REQUIRED)
 find_package(kdl_parser REQUIRED)
@@ -67,17 +68,17 @@ target_include_directories(cartesian_control_common_v7 PUBLIC
 )
 target_link_libraries(cartesian_control_common_v7 Eigen3::Eigen)
 ament_target_dependencies(cartesian_control_common_v7
-  rclcpp sensor_msgs geometry_msgs std_msgs kdl_parser orocos_kdl
+  rclcpp sensor_msgs geometry_msgs franka_msgs std_msgs kdl_parser orocos_kdl
 )
 
 add_executable(ik_velocity_controller src/ik_velocity_node.cpp)
 target_link_libraries(ik_velocity_controller cartesian_control_common_v7 Eigen3::Eigen)
-ament_target_dependencies(ik_velocity_controller rclcpp sensor_msgs geometry_msgs std_msgs)
+ament_target_dependencies(ik_velocity_controller rclcpp sensor_msgs geometry_msgs franka_msgs std_msgs)
 
 # Cartesian wrench / IK-based twist-force controller (no qpOASES dependency).
 add_executable(ik_force_controller src/ik_force_node.cpp)
 target_link_libraries(ik_force_controller cartesian_control_common_v7 Eigen3::Eigen)
-ament_target_dependencies(ik_force_controller rclcpp sensor_msgs geometry_msgs std_msgs)
+ament_target_dependencies(ik_force_controller rclcpp sensor_msgs geometry_msgs franka_msgs std_msgs)
 
 add_executable(qp_velocity_controller src/qp_velocity_node.cpp)
 target_include_directories(qp_velocity_controller PRIVATE ${QPOASES_INCLUDE_DIR})
@@ -92,7 +93,7 @@ ament_target_dependencies(qp_velocity_controller
 
 add_executable(pid_position_controller src/pid_position_node.cpp)
 target_link_libraries(pid_position_controller cartesian_control_common_v7 Eigen3::Eigen)
-ament_target_dependencies(pid_position_controller rclcpp sensor_msgs geometry_msgs std_msgs)
+ament_target_dependencies(pid_position_controller rclcpp sensor_msgs geometry_msgs franka_msgs std_msgs)
 
 add_executable(lmpc_position_controller src/lmpc_position_node.cpp)
 target_include_directories(lmpc_position_controller PRIVATE ${QPOASES_INCLUDE_DIR})

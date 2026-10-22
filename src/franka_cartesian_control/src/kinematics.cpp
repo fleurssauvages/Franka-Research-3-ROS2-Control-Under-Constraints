@@ -2,140 +2,116 @@
 
 #include <kdl_parser/kdl_parser.hpp>
 
-#include <algorithm>
-#include <cctype>
+#include <cmath>
+#include <stdexcept>
 
 namespace franka_cartesian_control {
 
-namespace {
-
-bool endsWith(const std::string& value, const std::string& suffix) {
-  return value.size() >= suffix.size() &&
-         value.compare(value.size() - suffix.size(), suffix.size(), suffix) == 0;
-}
-
-}  // namespace
-
-bool Kinematics::initialize(const std::string& urdf, const std::string& root_link,
-                            const std::string& tip_link, std::string* error) {
-  return initializeFromRobotDescription(urdf, root_link, tip_link, error);
-}
-
-bool Kinematics::initializeFromRobotDescription(const std::string& urdf, const std::string& root_link,
-                            const std::string& requested_tip_link, std::string* error) {
+bool Kinematics::initializeFromRobotDescription(const std::string& urdf,
+                                                 const std::string& root_link,
+                                                 std::string* error) {
   ready_ = false;
-  resolved_tip_link_.clear();
+  resolved_flange_link_.clear();
   jac_solver_.reset();
   fk_solver_.reset();
   chain_ = KDL::Chain();
 
-  std::string requested = requested_tip_link;
-  const auto first = requested.find_first_not_of(" \t\r\n");
-  if (first == std::string::npos) {
-    requested.clear();
-  } else {
-    requested = requested.substr(first, requested.find_last_not_of(" \t\r\n") - first + 1);
-  }
-  std::string mode = requested;
-  std::transform(mode.begin(), mode.end(), mode.begin(), [](unsigned char c) {
-    return static_cast<char>(std::tolower(c));
-  });
-  if (mode == "auto") requested.clear();
-  // Explicit guard against ever resolving the "auto" keyword as a URDF link.
-  // Only names that appeared in /robot_description may be passed to getChain.
-  KDL::Tree tree;
-  if (!kdl_parser::treeFromString(urdf, tree)) {
-    if (error) *error = "Failed to parse robot_description into a KDL tree";
+  // The URDF is used only for the base->link8 arm kinematics, never to
+  // determine the tool. The actual tool frame comes from Franka Desk.
+  const std::string suffix = "_link0";
+  if (root_link.size() <= suffix.size() ||
+      root_link.compare(root_link.size() - suffix.size(), suffix.size(), suffix) != 0) {
+    if (error) *error = "Expected root link ending in _link0: " + root_link;
     return false;
   }
-
-  const auto valid_arm_chain = [&](const std::string& candidate, KDL::Chain& chain) {
-    return !candidate.empty() && candidate != root_link &&
-           tree.getChain(root_link, candidate, chain) &&
-           chain.getNrOfJoints() == kDof;
-  };
-
-  if (!requested.empty()) {
-    // An explicitly selected TCP is authoritative; an invalid selection is a
-    // configuration error, never an invitation to silently pick another link.
-    if (!tree.getChain(root_link, requested, chain_)) {
-      if (error) {
-        *error = "[FR3_KINEMATICS] Requested tip_link '" + requested +
-                 "' is not reachable from '" + root_link +
-                 "' in /robot_description; check the installed configuration";
-      }
-      return false;
-    }
-    if (chain_.getNrOfJoints() != kDof) {
-      if (error) {
-        *error = "[FR3_KINEMATICS] Requested tip_link '" + requested + "' has " +
-                 std::to_string(chain_.getNrOfJoints()) +
-                 " movable joints from '" + root_link + "', expected 7";
-      }
-      return false;
-    }
-    resolved_tip_link_ = requested;
-  } else {
-    // Resolve ONLY against the URDF actually published by Franka bringup.
-    // The gripper flag changes that description; it is not a separate source
-    // of kinematic truth. Prefer a named TCP/EE to a bare flange when present.
-    std::string prefix = root_link;
-    if (endsWith(prefix, "_link0")) prefix.resize(prefix.size() - 6);
-    const std::vector<std::string> preferred = {
-        prefix + "_hand_tcp", prefix + "_tcp", prefix + "_ee",
-        prefix + "_tool0", prefix + "_link8", prefix + "_flange"};
-    for (const auto& candidate : preferred) {
-      KDL::Chain candidate_chain;
-      if (valid_arm_chain(candidate, candidate_chain)) {
-        chain_ = candidate_chain;
-        resolved_tip_link_ = candidate;
-        break;
-      }
-    }
-
-    if (resolved_tip_link_.empty()) {
-      // Generic URDFs may not use Franka link names. Auto-select only when
-      // there is precisely one 7-actuated-joint descendant. Otherwise fail
-      // clearly rather than using an arbitrary link as the collision TCP.
-      std::vector<std::string> matches;
-      KDL::Chain unique_chain;
-      for (const auto& entry : tree.getSegments()) {
-        KDL::Chain candidate_chain;
-        if (valid_arm_chain(entry.first, candidate_chain)) {
-          matches.push_back(entry.first);
-          if (matches.size() == 1) unique_chain = candidate_chain;
-        }
-      }
-      if (matches.size() == 1) {
-        chain_ = unique_chain;
-        resolved_tip_link_ = matches.front();
-      } else {
-        if (error) {
-          std::string available;
-          for (const auto& match : matches) {
-            if (!available.empty()) available += ", ";
-            available += match;
-          }
-          *error = "[FR3_KINEMATICS] Cannot uniquely resolve a 7-DOF Cartesian tip from '" +
-                   root_link + "' in /robot_description (" +
-                   std::to_string(matches.size()) +
-                   " possible links: " + available +
-                   "). Set tip_link explicitly to the robot's TCP.";
-        }
-        return false;
-      }
-    }
+  const std::string flange_link = root_link.substr(0, root_link.size() - suffix.size()) + "_link8";
+  KDL::Tree tree;
+  if (!kdl_parser::treeFromString(urdf, tree) ||
+      !tree.getChain(root_link, flange_link, chain_)) {
+    if (error) *error = "Cannot construct KDL chain " + root_link + " -> " + flange_link;
+    return false;
   }
-
+  if (chain_.getNrOfJoints() != kDof) {
+    if (error) *error = "KDL chain to " + flange_link + " must have exactly 7 joints";
+    return false;
+  }
+  resolved_flange_link_ = flange_link;
   jac_solver_ = std::make_unique<KDL::ChainJntToJacSolver>(chain_);
   fk_solver_ = std::make_unique<KDL::ChainFkSolverPos_recursive>(chain_);
   ready_ = true;
   return true;
 }
 
+void Kinematics::subscribeToFrankaState(rclcpp::Node& node,
+                                       const std::string& topic, double timeout_seconds) {
+  if (!std::isfinite(timeout_seconds) || timeout_seconds <= 0.0) {
+    throw std::invalid_argument("franka_state_timeout must be > 0");
+  }
+  state_timeout_seconds_ = timeout_seconds;
+  const auto logger = node.get_logger();
+  franka_state_sub_ = node.create_subscription<franka_msgs::msg::FrankaRobotState>(
+      topic, rclcpp::SensorDataQoS(),
+      [this, logger](franka_msgs::msg::FrankaRobotState::SharedPtr msg) {
+        frankaStateCallback(msg);
+        Eigen::Isometry3d flange_T_ee;
+        if (freshToolTransform(flange_T_ee)) {
+          RCLCPP_INFO_ONCE(
+              logger,
+              "FRANKA_DESK_EE: received live F_T_EE: translation [%.4f, %.4f, %.4f] m; "
+              "using KDL link8 + Desk frame for all Cartesian kinematics",
+              flange_T_ee.translation().x(), flange_T_ee.translation().y(),
+              flange_T_ee.translation().z());
+        }
+      });
+}
+
+void Kinematics::frankaStateCallback(
+    const franka_msgs::msg::FrankaRobotState::SharedPtr msg) {
+  const auto& pose = msg->f_t_ee.pose;  // flange_T_EE, from robot/Desk
+  const Eigen::Vector3d translation(pose.position.x, pose.position.y, pose.position.z);
+  Eigen::Quaterniond rotation(pose.orientation.w, pose.orientation.x,
+                              pose.orientation.y, pose.orientation.z);
+  const double norm = rotation.norm();
+  if (!translation.allFinite() || !rotation.coeffs().allFinite() ||
+      !std::isfinite(norm) || std::abs(norm - 1.0) > 0.05) {
+    // Never substitute the flange or identity for an invalid tool transform.
+    std::lock_guard<std::mutex> lock(tool_mutex_);
+    have_tool_transform_ = false;
+    return;
+  }
+  rotation.normalize();
+  Eigen::Isometry3d transform = Eigen::Isometry3d::Identity();
+  transform.linear() = rotation.toRotationMatrix();
+  transform.translation() = translation;
+  {
+    std::lock_guard<std::mutex> lock(tool_mutex_);
+    flange_T_ee_ = transform;
+    last_tool_update_ = std::chrono::steady_clock::now();
+    have_tool_transform_ = true;
+  }
+}
+
+bool Kinematics::freshToolTransform(Eigen::Isometry3d& flange_T_ee) const {
+  std::lock_guard<std::mutex> lock(tool_mutex_);
+  if (!have_tool_transform_ ||
+      std::chrono::duration<double>(std::chrono::steady_clock::now() - last_tool_update_).count()
+          > state_timeout_seconds_) {
+    return false;
+  }
+  flange_T_ee = flange_T_ee_;
+  return true;
+}
+
+bool Kinematics::tcpReady() const {
+  Eigen::Isometry3d transform;
+  return ready_ && freshToolTransform(transform);
+}
+
 bool Kinematics::compute(const Vector7d& q, Matrix67d& jacobian,
                          Eigen::Isometry3d& root_T_tip) const {
-  if (!ready_) return false;
+  if (!ready_ || !q.allFinite()) return false;
+  Eigen::Isometry3d flange_T_ee;
+  if (!freshToolTransform(flange_T_ee)) return false;
   KDL::JntArray q_kdl(kDof);
   for (std::size_t i = 0; i < kDof; ++i) q_kdl(i) = q(static_cast<int>(i));
 
@@ -144,14 +120,23 @@ bool Kinematics::compute(const Vector7d& q, Matrix67d& jacobian,
   if (jac_solver_->JntToJac(q_kdl, J_kdl) < 0 || fk_solver_->JntToCart(q_kdl, frame) < 0) {
     return false;
   }
-  jacobian = J_kdl.data;
 
-  root_T_tip.setIdentity();
+  Eigen::Isometry3d root_T_flange = Eigen::Isometry3d::Identity();
   for (int r = 0; r < 3; ++r) {
-    for (int c = 0; c < 3; ++c) root_T_tip.linear()(r, c) = frame.M(r, c);
+    for (int c = 0; c < 3; ++c) root_T_flange.linear()(r, c) = frame.M(r, c);
   }
-  root_T_tip.translation() << frame.p.x(), frame.p.y(), frame.p.z();
-  return true;
+  root_T_flange.translation() << frame.p.x(), frame.p.y(), frame.p.z();
+  root_T_tip = root_T_flange * flange_T_ee;
+
+  // KDL Jacobian is based at link8, expressed in the root frame. Shift the
+  // linear velocity to the Desk-defined end effector; angular part is unchanged.
+  // v_EE = v_link8 + omega x (R_root_link8 * p_link8_EE).
+  jacobian = J_kdl.data;
+  const Eigen::Vector3d r = root_T_flange.linear() * flange_T_ee.translation();
+  for (int i = 0; i < static_cast<int>(kDof); ++i) {
+    jacobian.col(i).head<3>() += jacobian.col(i).tail<3>().cross(r);
+  }
+  return root_T_tip.matrix().allFinite() && jacobian.allFinite();
 }
 
 Eigen::Matrix<double, 7, 6> dampedPseudoInverse(const Matrix67d& J, double damping) {
