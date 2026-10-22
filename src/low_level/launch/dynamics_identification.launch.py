@@ -213,6 +213,8 @@ def _setup(context):
                 LaunchConfiguration('friction_smoothing_velocity').perform(context)
             ),
             'output_directory': LaunchConfiguration('output_directory').perform(context),
+            'clear_calibration_folder': _as_bool(
+                LaunchConfiguration('clear_calibration_folder').perform(context)),
         }],
     )
 
@@ -384,6 +386,11 @@ def generate_launch_description():
             'output_directory',
             default_value=_default_output_directory(),
             description='Directory for calibration CSV/JSON output (default: <workspace>/data/calibration)',
+        ),
+        DeclareLaunchArgument(
+            'clear_calibration_folder',
+            default_value='true',
+            description='Delete previously generated calibration CSV/JSON/YAML files at startup',
         ),
         DeclareLaunchArgument('qp_frequency', default_value='200.0'),
         DeclareLaunchArgument(

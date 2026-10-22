@@ -5,6 +5,7 @@ import csv
 from datetime import datetime, timezone
 import json
 import math
+import re
 import time
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -161,6 +162,7 @@ class DynamicsIdentificationExperiment(Node):
         self.declare_parameter('max_measured_joint_acceleration', 3.0)
         self.declare_parameter('observation_timeout', 0.15)
         self.declare_parameter('output_directory', _default_output_directory())
+        self.declare_parameter('clear_calibration_folder', False)
 
         robot_type = str(self.get_parameter('robot_type').value)
         arm_prefix = str(self.get_parameter('arm_prefix').value)
@@ -257,6 +259,9 @@ class DynamicsIdentificationExperiment(Node):
         self.output_directory = Path(
             str(self.get_parameter('output_directory').value)
         ).expanduser()
+        self.clear_calibration_folder = bool(
+            self.get_parameter('clear_calibration_folder').value
+        )
 
         if self.command_rate <= 0.0:
             raise ValueError('command_rate must be > 0')
@@ -357,6 +362,8 @@ class DynamicsIdentificationExperiment(Node):
             f'Franka M/C/g are fixed and only the residual friction model is identified.'
         )
         self.get_logger().info(f'Calibration data directory: {self.output_directory}')
+        if self.clear_calibration_folder:
+            self._clear_previous_calibration_files()
         if self.run_motion and self.motion_mode == 'joint':
             speeds = ', '.join(f'{v:.3f}' for v in self.friction_velocity_levels)
             self.get_logger().warn(
@@ -371,6 +378,30 @@ class DynamicsIdentificationExperiment(Node):
                 'QP motion selected. Friction will be fitted only from low-acceleration samples; '
                 'joint friction sweep mode is preferred for calibration.'
             )
+
+    def _clear_previous_calibration_files(self) -> None:
+        """Remove only previously generated files in the configured output folder.
+
+        Other user files, subdirectories, and symlinks are never removed.
+        """
+        if not self.output_directory.is_dir():
+            self.get_logger().info('Calibration directory does not exist; nothing to clear.')
+            return
+
+        generated_name = re.compile(
+            r'(?:friction_identification_\d{8}_\d{6}\.(?:csv|json)'
+            r'|friction_calibration_\d{8}_\d{6}\.yaml)'
+        )
+        removed = 0
+        for path in self.output_directory.iterdir():
+            if path.is_symlink() or not path.is_file():
+                continue
+            if generated_name.fullmatch(path.name):
+                path.unlink()
+                removed += 1
+        self.get_logger().warn(
+            f'Cleared {removed} previous calibration file(s) from {self.output_directory}'
+        )
 
     def _observation_callback(self, msg: Float64MultiArray) -> None:
         if len(msg.data) != OBS_SIZE:
