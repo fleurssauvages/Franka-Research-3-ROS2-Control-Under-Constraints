@@ -54,38 +54,6 @@ Change `robot_ip:=...` on the command line if your robot uses another address.
 
 ---
 
-**New controller modes:** The stack also supports low-level `mode:=torque` and Cartesian `controller:=ik_force`. The Cartesian wrench path is `WrenchStamped -> ik_force (J(q)^T F) -> JointState.effort -> low-level torque -> FR3`. These modes use the same hardware-facing impedance controller, but external joint torque replaces its stiffness/damping tracking contribution.
-
-## Torque and Cartesian force control
-
-The stack also provides two effort-based control options:
-
-| Mode | Launch option | Command input | Output |
-|---|---|---|---|
-| Joint torque | `low_level/control.launch.py mode:=torque` | `/fr3/tau_command` (`sensor_msgs/msg/JointState.effort`, seven entries) | Additional joint effort, using the impedance controller's compensation pipeline |
-| Cartesian force | `franka_cartesian_control/cartesian_control.launch.py controller:=ik_force` | `/fr3/cartesian_wrench_command` (`geometry_msgs/msg/WrenchStamped`) | `J(q)^T F` published to `/fr3/tau_command` |
-
-In torque mode the external joint torques **replace the stiffness/damping tracking terms**. The normal configured friction compensation, optional breakaway, and optional local gravity-error correction remain available. Franka provides its nominal gravity compensation separately. The `ik_force` node uses `low_level_mode:=torque` with the default automatic mode selection. It does **not** measure contact forces or regulate a measured contact-force target.
-
-```bash
-# Launch joint-torque control
-ros2 launch low_level control.launch.py mode:=torque
-
-# Launch Cartesian wrench-to-torque control (starts low-level torque mode)
-ros2 launch franka_cartesian_control cartesian_control.launch.py controller:=ik_force
-```
-
-First test the wiring with an all-zero wrench, with the workspace clear and the robot in a safe condition:
-
-```bash
-ros2 topic pub -r 50 /fr3/cartesian_wrench_command geometry_msgs/msg/WrenchStamped \
-  "{header: {frame_id: 'fr3_link0'}, wrench: {force: {x: 0.0, y: 0.0, z: 0.0}, torque: {x: 0.0, y: 0.0, z: 0.0}}}"
-```
-
-Monitor `/fr3/tau_command`, `/ik_force_controller/ready`, and `ros2 control list_controllers`. A zero requested wrench does not necessarily mean zero hardware effort when compensation is active. See Sections 8.1 and 11.1 for further details.
-
----
-
 ## 1. Architecture
 
 The normal command chain is:
