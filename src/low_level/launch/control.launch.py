@@ -702,7 +702,7 @@ def generate_launch_description():
         DeclareLaunchArgument("torque_delta_tau_max", default_value="0.2",
                               description="Per-update joint torque slew limit [Nm] in torque mode (at 1 kHz)"),
         DeclareLaunchArgument("position_command_topic", default_value="/fr3/joint_position_commands"),
-        DeclareLaunchArgument("position_kp", default_value="2.0"),
+        DeclareLaunchArgument("position_kp", default_value="4.0"),
         DeclareLaunchArgument("dynamics_observation_topic", default_value="/fr3/dynamics_observation"),
         DeclareLaunchArgument("dynamics_publish_rate", default_value="200.0"),
         DeclareLaunchArgument("dynamics_acceleration_filter_tau", default_value="0.03"),

@@ -521,7 +521,7 @@ ROBOT_IP=192.16.0.1
 | `/fr3/cartesian_pose_command` | `geometry_msgs/msg/PoseStamped` | user -> PID/LMPC | Desired TCP pose |
 | `/fr3/cartesian_pose` | `geometry_msgs/msg/PoseStamped` | PID/LMPC -> user | Current TCP pose |
 | `/fr3/lmpc_obstacle_mesh` | `visualization_msgs/msg/Marker` | user -> LMPC | Runtime triangle-mesh obstacle |
-| `/fr3/gripper` | `std_msgs/msg/Float32` | user -> separate gripper node (if configured) | Optional, independent Franka Hand actuation; not started by this arm stack |
+| `/fr3/gripper` | `std_msgs/msg/Float32` | user -> separate gripper node (if configured) | Optional, independent Franka Hand actuation |
 | `/fr3/dynamics_observation` | `std_msgs/msg/Float64MultiArray` | observer -> calibration | Dynamics data |
 
 Cartesian pose commands and LMPC obstacle meshes are expected in the controller root frame, normally `fr3_link0`. No TF transform is applied by these nodes.
@@ -1477,19 +1477,28 @@ The position launch propagates the documented impedance-friction options using t
 
 ---
 
-# 16. Gripper actuation (separate from Desk EE kinematics)
+# 16. Gripper actuation
 
-These arm and Cartesian launches **never automatically start** a Franka Hand
-driver or the project's `gripper_control_node`. The end-effector frame used
-for Cartesian kinematics is obtained from Desk through Franka's live robot
-state; this does **not** provide ROS commands to open or close fingers.
+Gripper actuation is **disabled by default** in all low-level, Cartesian control, and dynamics identification launch files. It can be enabled explicitly using the `enable_gripper` launch argument.
 
-The standalone `low_level` package still contains `gripper_control_node`
-for installations that run a compatible Franka Gripper action server
-separately. It is **not** activated by the control/identification launch
-files. Users requiring gripper actuation must configure the appropriate
-gripper-specific ROS launch and verify the corresponding action servers;
-non-Franka grippers need their own drivers.
+| Launch argument | Default | Behavior |
+|---|---|---|
+| `enable_gripper:=false` | Yes | No gripper driver or control node is started. |
+| `enable_gripper:=true` | No | Starts the official Franka Hand driver and the project's `gripper_control_node`. |
+
+To enable gripper control, launch the desired controller with:
+
+```bash
+ros2 launch franka_cartesian_control cartesian_control.launch.py \
+    controller:=qp \
+    enable_gripper:=true
+```
+
+When enabled, the Franka Hand driver provides the gripper action servers, while `gripper_control_node` exposes the `/fr3/gripper` topic (`std_msgs/msg/Float32`) for opening and closing the gripper.
+
+The `enable_gripper` option is **independent of Cartesian kinematics**. All Cartesian controllers use the end-effector transformation (`F_T_EE`) obtained automatically from Franka Desk through the live robot state, regardless of whether gripper actuation is enabled.
+
+**Important:** `enable_gripper:=true` is intended for the official Franka Hand. Custom or third-party grippers configured in Desk require their own ROS drivers and control interfaces. Configuring an end effector in Desk does not automatically provide ROS commands for gripper actuation.
 
 ---
 
