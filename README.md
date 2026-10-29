@@ -2193,12 +2193,14 @@ sensor_msgs/msg/JointState
 
 ```
 
-and sends 14 little-endian doubles:
+and sends a JSON datagram containing the endpoint name and the joint values:
 
 ```text
-
-q[0..6], dq[0..6]
-
+{
+  "endpoint_name": "fr3_joint_state_feedback_to_pc2",
+  "q": [q0, q1, ..., q6],
+  "dq": [dq0, dq1, ..., dq6]
+}
 ```
 
 to the configured UDP destination.

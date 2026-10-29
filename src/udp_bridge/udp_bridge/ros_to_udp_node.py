@@ -81,7 +81,7 @@ class _WriterEndpoint:
                 values[name] = self._field_value(msg, field)
             return encode_binary(values, self.encoding)
 
-        root = {}
+        root = {'endpoint_name': self.name}
         for field in self.fields:
             udp_field = str(field.get('udp_field', field.get('name', ''))).strip()
             if not udp_field:

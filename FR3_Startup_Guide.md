@@ -719,30 +719,37 @@ This example deliberately transmits **zero** velocity. Check that the ROS bridge
 
 ### 9.3 Publish joint telemetry to the external program
 
-The README's **binary publisher example** listens to:
+The publisher example listens to:
 
 ```text
 /franka/joint_states        sensor_msgs/msg/JointState
 ```
 
-It serializes **14 little-endian float64** values in this order:
+It sends one JSON datagram containing the endpoint name and the 7 joint positions
+and velocities:
 
 ```text
-q[0], q[1], ..., q[6], dq[0], dq[1], ..., dq[6]
+{
+  "endpoint_name": "fr3_joint_state_feedback_to_pc2",
+  "q": [q0, q1, ..., q6],
+  "dq": [dq0, dq1, ..., dq6]
+}
 ```
 
-The resulting packet is **112 bytes** (`14 × 8`). Configure the UDP destination IP and port in `udp_publisher.json` to match the **external receiver**. Match joint ordering, units (radians and radians/second), and packet layout on both sides.
+Configure the UDP destination IP and port in `udp_publisher.json` to match the
+**external receiver**. Match joint ordering and units (radians and radians/second)
+on both sides.
 
 A minimal external Python decoding operation looks like:
 
 ```python
-import struct
+import json
 
-# data: one received UDP datagram, expected to contain exactly 112 bytes
-if len(data) == 112:
-    values = struct.unpack("<14d", data)
-    q = values[:7]
-    dq = values[7:]
+# data: one received UDP datagram
+packet = json.loads(data.decode("utf-8"))
+endpoint_name = packet["endpoint_name"]
+q = packet["q"]
+dq = packet["dq"]
 ```
 
 The snippet illustrates decoding only; receive the packet with a socket bound to the destination port configured in `udp_publisher.json`.
