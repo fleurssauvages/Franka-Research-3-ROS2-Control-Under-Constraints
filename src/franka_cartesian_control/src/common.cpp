@@ -43,6 +43,24 @@ bool extractJointState(const sensor_msgs::msg::JointState& msg,
   return q.allFinite() && dq.allFinite();
 }
 
+bool extractJointEffort(const sensor_msgs::msg::JointState& msg,
+                        const std::vector<std::string>& joint_names,
+                        Vector7d& effort) {
+  if (msg.name.empty() || msg.effort.size() != msg.name.size()) return false;
+  for (std::size_t j = 0; j < kDof; ++j) {
+    std::size_t index = msg.name.size();
+    for (std::size_t i = 0; i < msg.name.size(); ++i) {
+      if (msg.name[i] == joint_names[j]) {
+        index = i;
+        break;
+      }
+    }
+    if (index >= msg.effort.size()) return false;
+    effort(static_cast<int>(j)) = msg.effort[index];
+  }
+  return effort.allFinite();
+}
+
 Vector6d twistToVector(const geometry_msgs::msg::TwistStamped& msg) {
   Vector6d x;
   x << msg.twist.linear.x, msg.twist.linear.y, msg.twist.linear.z,

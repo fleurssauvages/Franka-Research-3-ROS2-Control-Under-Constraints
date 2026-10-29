@@ -90,6 +90,10 @@ QpVelocityNode::QpVelocityNode() : Node("qp_velocity_controller") {
   const auto joint_state_topic = declare_parameter<std::string>("joint_state_topic", "/franka/joint_states");
   const auto twist_topic = declare_parameter<std::string>("twist_topic", "/fr3/cartesian_twist_command");
   const auto command_topic = declare_parameter<std::string>("joint_command_topic", "/fr3/joint_commands");
+  const auto cartesian_velocity_topic = declare_parameter<std::string>(
+      "cartesian_velocity_topic", "/fr3/cartesian_velocity");
+  const auto cartesian_wrench_topic = declare_parameter<std::string>(
+      "cartesian_wrench_topic", "/fr3/cartesian_wrench");
 
   auto robot_qos = rclcpp::QoS(1).transient_local().reliable();
   robot_description_sub_ = create_subscription<std_msgs::msg::String>(
@@ -103,6 +107,10 @@ QpVelocityNode::QpVelocityNode() : Node("qp_velocity_controller") {
       std::bind(&QpVelocityNode::twistCallback, this, std::placeholders::_1));
   command_pub_ = create_publisher<sensor_msgs::msg::JointState>(
       command_topic, rclcpp::QoS(1).best_effort().durability_volatile());
+  cartesian_velocity_pub_ = create_publisher<geometry_msgs::msg::TwistStamped>(
+      cartesian_velocity_topic, rclcpp::SensorDataQoS());
+  cartesian_wrench_pub_ = create_publisher<geometry_msgs::msg::WrenchStamped>(
+      cartesian_wrench_topic, rclcpp::SensorDataQoS());
   status_pub_ = create_publisher<std_msgs::msg::Float64MultiArray>("~/status", 10);
   ready_pub_ = create_publisher<std_msgs::msg::Bool>(
       "~/ready", rclcpp::QoS(1).transient_local().reliable());
@@ -147,6 +155,7 @@ void QpVelocityNode::jointStateCallback(const sensor_msgs::msg::JointState::Shar
   Vector7d q, dq;
   if (extractJointState(*msg, joint_names_, q, dq)) {
     q_ = q; dq_ = dq;
+    have_joint_effort_ = extractJointEffort(*msg, joint_names_, tau_);
     if (!have_joint_state_) previous_command_ = dq;
     have_joint_state_ = true;
   }
@@ -162,13 +171,14 @@ void QpVelocityNode::twistCallback(const geometry_msgs::msg::TwistStamped::Share
 }
 
 void QpVelocityNode::update() {
-  Vector7d q, dq;
+  Vector7d q, dq, tau;
   Vector6d twist;
   std::chrono::steady_clock::time_point last_twist;
-  bool have_state, have_twist;
+  bool have_state, have_effort, have_twist;
   {
     std::lock_guard<std::mutex> lock(mutex_);
     q = q_; dq = dq_; twist = desired_twist_; last_twist = last_twist_time_steady_;
+    tau = tau_; have_effort = have_joint_effort_;
     have_state = have_joint_state_; have_twist = have_twist_;
   }
   if (kinematics_.tcpReady() && have_state && !ready_published_) {
@@ -192,6 +202,16 @@ void QpVelocityNode::update() {
 
   const auto t = now();
   const auto steady_now = std::chrono::steady_clock::now();
+  Matrix67d J;
+  Eigen::Isometry3d pose;
+  if (!kinematics_.compute(q, J, pose)) return;
+  cartesian_velocity_pub_->publish(
+      makeCartesianVelocityMessage(J * dq, root_link_, t));
+  if (have_effort) {
+    const Vector6d wrench = dampedPseudoInverse(J, pinv_damping_).transpose() * tau;
+    cartesian_wrench_pub_->publish(
+        makeCartesianWrenchMessage(wrench, root_link_, t));
+  }
   const bool command_fresh = have_twist &&
       (std::chrono::duration<double>(steady_now - last_twist).count() <= command_timeout_);
 
@@ -219,13 +239,10 @@ void QpVelocityNode::update() {
   // the low-level layer only interpolates that target at 1 kHz for Franka-safe
   // acceleration/jerk continuity. Posture is disabled for this stop below.
   if (!command_fresh && stopping_on_timeout_) {
-    Matrix67d stop_J;
-    Eigen::Isometry3d stop_pose;
-    if (!kinematics_.compute(q, stop_J, stop_pose)) return;
     updateJointRecoveryState(q);
-    updateSurfaceRecoveryState(stop_pose);
+    updateSurfaceRecoveryState(pose);
     Vector7d stop_solution = Vector7d::Zero();
-    if (solveQp(stop_J, stop_pose, Vector6d::Zero(), dt, stop_solution, true)) {
+    if (solveQp(J, pose, Vector6d::Zero(), dt, stop_solution, true)) {
       if (stop_solution.norm() < 1e-4) stop_solution.setZero();
       command_pub_->publish(makeVelocityCommand(joint_names_, stop_solution, t));
       {
@@ -245,9 +262,6 @@ void QpVelocityNode::update() {
   // hysteresis prevents chatter and gives the robot a real "push back" motion.
   bool need_recovery = false;
   bool release_blending = false;
-  Matrix67d J;
-  Eigen::Isometry3d pose;
-  bool have_kinematics = false;
 
   if (!command_fresh) {
     if (!repulsion_when_idle_) {
@@ -268,12 +282,9 @@ void QpVelocityNode::update() {
           (1.0 / idle_safety_frequency_);
 
     if (safety_check_due && enforce_surfaces_ && !surface_planes_.empty()) {
-      if (kinematics_.compute(q, J, pose)) {
-        have_kinematics = true;
-        last_idle_safety_check_time_steady_ = steady_now;
-        have_last_idle_safety_check_time_ = true;
-        need_recovery = updateSurfaceRecoveryState(pose) || need_recovery;
-      }
+      last_idle_safety_check_time_steady_ = steady_now;
+      have_last_idle_safety_check_time_ = true;
+      need_recovery = updateSurfaceRecoveryState(pose) || need_recovery;
     }
 
     if (!need_recovery) {
@@ -312,10 +323,6 @@ void QpVelocityNode::update() {
       previous_command_ = recovery_command_;
     }
     return;
-  }
-
-  if (!have_kinematics) {
-    if (!kinematics_.compute(q, J, pose)) return;
   }
 
   Vector7d solution = Vector7d::Zero();

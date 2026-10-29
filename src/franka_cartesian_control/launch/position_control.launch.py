@@ -77,6 +77,8 @@ def _setup(context):
             "collision_torque_scale": LaunchConfiguration("collision_torque_scale").perform(context),
             "collision_force_scale": LaunchConfiguration("collision_force_scale").perform(context),
             "twist_topic": LaunchConfiguration("twist_topic").perform(context),
+            "cartesian_velocity_topic": LaunchConfiguration("cartesian_velocity_topic").perform(context),
+            "cartesian_wrench_topic": LaunchConfiguration("cartesian_wrench_topic").perform(context),
             "max_velocity": LaunchConfiguration("max_velocity").perform(context),
             "max_acceleration": LaunchConfiguration("max_acceleration").perform(context),
         }.items(),
@@ -307,6 +309,8 @@ def generate_launch_description():
         DeclareLaunchArgument("joint_state_topic", default_value="/franka/joint_states"),
         DeclareLaunchArgument("desired_pose_topic", default_value="/fr3/cartesian_pose_command"),
         DeclareLaunchArgument("twist_topic", default_value="/fr3/cartesian_twist_command"),
+        DeclareLaunchArgument("cartesian_velocity_topic", default_value="/fr3/cartesian_velocity"),
+        DeclareLaunchArgument("cartesian_wrench_topic", default_value="/fr3/cartesian_wrench"),
         DeclareLaunchArgument("current_pose_topic", default_value="/fr3/cartesian_pose"),
         OpaqueFunction(function=_setup),
     ])

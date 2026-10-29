@@ -8,6 +8,7 @@
 
 #include <Eigen/Core>
 #include <geometry_msgs/msg/twist_stamped.hpp>
+#include <geometry_msgs/msg/wrench_stamped.hpp>
 #include <sensor_msgs/msg/joint_state.hpp>
 #include <rclcpp/rclcpp.hpp>
 
@@ -23,12 +24,45 @@ struct SurfacePlane {
   double gain{2.0};
 };
 
+inline geometry_msgs::msg::TwistStamped makeCartesianVelocityMessage(
+    const Vector6d& velocity, const std::string& frame_id,
+    const rclcpp::Time& stamp) {
+  geometry_msgs::msg::TwistStamped msg;
+  msg.header.stamp = stamp;
+  msg.header.frame_id = frame_id;
+  msg.twist.linear.x = velocity(0);
+  msg.twist.linear.y = velocity(1);
+  msg.twist.linear.z = velocity(2);
+  msg.twist.angular.x = velocity(3);
+  msg.twist.angular.y = velocity(4);
+  msg.twist.angular.z = velocity(5);
+  return msg;
+}
+
+inline geometry_msgs::msg::WrenchStamped makeCartesianWrenchMessage(
+    const Vector6d& wrench, const std::string& frame_id,
+    const rclcpp::Time& stamp) {
+  geometry_msgs::msg::WrenchStamped msg;
+  msg.header.stamp = stamp;
+  msg.header.frame_id = frame_id;
+  msg.wrench.force.x = wrench(0);
+  msg.wrench.force.y = wrench(1);
+  msg.wrench.force.z = wrench(2);
+  msg.wrench.torque.x = wrench(3);
+  msg.wrench.torque.y = wrench(4);
+  msg.wrench.torque.z = wrench(5);
+  return msg;
+}
+
 std::vector<std::string> deriveJointNames(const std::string& robot_type,
                                           const std::string& arm_prefix);
 std::string deriveRootLink(const std::string& robot_type, const std::string& arm_prefix);
 bool extractJointState(const sensor_msgs::msg::JointState& msg,
                        const std::vector<std::string>& joint_names,
                        Vector7d& q, Vector7d& dq);
+bool extractJointEffort(const sensor_msgs::msg::JointState& msg,
+                        const std::vector<std::string>& joint_names,
+                        Vector7d& effort);
 Vector6d twistToVector(const geometry_msgs::msg::TwistStamped& msg);
 sensor_msgs::msg::JointState makeVelocityCommand(
     const std::vector<std::string>& joint_names, const Vector7d& qdot,

@@ -60,6 +60,10 @@ IkVelocityNode::IkVelocityNode() : Node("ik_velocity_controller") {
   const auto joint_state_topic = declare_parameter<std::string>("joint_state_topic", "/franka/joint_states");
   const auto twist_topic = declare_parameter<std::string>("twist_topic", "/fr3/cartesian_twist_command");
   const auto command_topic = declare_parameter<std::string>("joint_command_topic", "/fr3/joint_commands");
+  const auto cartesian_velocity_topic = declare_parameter<std::string>(
+      "cartesian_velocity_topic", "/fr3/cartesian_velocity");
+  const auto cartesian_wrench_topic = declare_parameter<std::string>(
+      "cartesian_wrench_topic", "/fr3/cartesian_wrench");
 
   auto robot_qos = rclcpp::QoS(1).transient_local().reliable();
   robot_description_sub_ = create_subscription<std_msgs::msg::String>(
@@ -73,6 +77,10 @@ IkVelocityNode::IkVelocityNode() : Node("ik_velocity_controller") {
       std::bind(&IkVelocityNode::twistCallback, this, std::placeholders::_1));
   command_pub_ = create_publisher<sensor_msgs::msg::JointState>(
       command_topic, rclcpp::QoS(1).best_effort().durability_volatile());
+  cartesian_velocity_pub_ = create_publisher<geometry_msgs::msg::TwistStamped>(
+      cartesian_velocity_topic, rclcpp::SensorDataQoS());
+  cartesian_wrench_pub_ = create_publisher<geometry_msgs::msg::WrenchStamped>(
+      cartesian_wrench_topic, rclcpp::SensorDataQoS());
   ready_pub_ = create_publisher<std_msgs::msg::Bool>(
       "~/ready", rclcpp::QoS(1).transient_local().reliable());
 
@@ -100,6 +108,7 @@ void IkVelocityNode::jointStateCallback(const sensor_msgs::msg::JointState::Shar
   Vector7d q, dq;
   if (extractJointState(*msg, joint_names_, q, dq)) {
     q_ = q; dq_ = dq;
+    have_joint_effort_ = extractJointEffort(*msg, joint_names_, tau_);
     if (!have_joint_state_) previous_command_ = dq;
     have_joint_state_ = true;
   }
@@ -116,12 +125,14 @@ void IkVelocityNode::twistCallback(const geometry_msgs::msg::TwistStamped::Share
 
 void IkVelocityNode::update() {
   Vector7d q, dq, previous;
+  Vector7d tau;
   Vector6d twist = Vector6d::Zero();
   std::chrono::steady_clock::time_point last_twist;
-  bool have_state, have_twist;
+  bool have_state, have_effort, have_twist;
   {
     std::lock_guard<std::mutex> lock(mutex_);
     q = q_; dq = dq_; previous = previous_command_;
+    tau = tau_; have_effort = have_joint_effort_;
     twist = desired_twist_; last_twist = last_twist_time_steady_;
     have_state = have_joint_state_; have_twist = have_twist_;
   }
@@ -144,7 +155,17 @@ void IkVelocityNode::update() {
     return;
   }
 
+  Matrix67d J;
+  Eigen::Isometry3d pose;
+  if (!kinematics_.compute(q, J, pose)) return;
   const auto t = now();
+  cartesian_velocity_pub_->publish(
+      makeCartesianVelocityMessage(J * dq, root_link_, t));
+  if (have_effort) {
+    const Vector6d wrench = dampedPseudoInverse(J, pinv_damping_).transpose() * tau;
+    cartesian_wrench_pub_->publish(
+        makeCartesianWrenchMessage(wrench, root_link_, t));
+  }
   const auto steady_now = std::chrono::steady_clock::now();
 
   // No Cartesian command means no joint command.  This is important when the
@@ -193,10 +214,6 @@ void IkVelocityNode::update() {
   }
   last_update_time_steady_ = steady_now;
   have_last_update_time_ = true;
-
-  Matrix67d J;
-  Eigen::Isometry3d pose;
-  if (!kinematics_.compute(q, J, pose)) return;
 
   const auto Jpinv = dampedPseudoInverse(J, pinv_damping_);
   Vector7d qdot = Jpinv * twist;

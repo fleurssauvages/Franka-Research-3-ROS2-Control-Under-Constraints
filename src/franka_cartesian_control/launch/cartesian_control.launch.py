@@ -50,6 +50,8 @@ def _setup(context):
     arm_prefix = LaunchConfiguration("arm_prefix").perform(context)
     namespace = LaunchConfiguration("namespace").perform(context)
     twist_topic = LaunchConfiguration("twist_topic").perform(context)
+    cartesian_velocity_topic = LaunchConfiguration("cartesian_velocity_topic").perform(context)
+    cartesian_wrench_topic = LaunchConfiguration("cartesian_wrench_topic").perform(context)
     joint_state_topic = LaunchConfiguration("joint_state_topic").perform(context)
     joint_command_topic = LaunchConfiguration("joint_command_topic").perform(context)
     tau_command_topic = LaunchConfiguration("tau_command_topic").perform(context)
@@ -89,6 +91,11 @@ def _setup(context):
         "repulsion_when_idle": repulsion_when_idle,
         "idle_safety_frequency": idle_safety_frequency,
     }
+    if controller != "ik_force":
+        node_parameters.update({
+            "cartesian_velocity_topic": cartesian_velocity_topic,
+            "cartesian_wrench_topic": cartesian_wrench_topic,
+        })
 
     # One shared set of joint motion limits is applied to both IK and QP.
     # This avoids the previous hidden behavior where QP silently kept the YAML
@@ -337,6 +344,8 @@ def generate_launch_description():
         DeclareLaunchArgument("collision_torque_scale", default_value="1.0"),
         DeclareLaunchArgument("collision_force_scale", default_value="1.0"),
         DeclareLaunchArgument("twist_topic", default_value="/fr3/cartesian_twist_command"),
+        DeclareLaunchArgument("cartesian_velocity_topic", default_value="/fr3/cartesian_velocity"),
+        DeclareLaunchArgument("cartesian_wrench_topic", default_value="/fr3/cartesian_wrench"),
         DeclareLaunchArgument("joint_state_topic", default_value="/franka/joint_states"),
         DeclareLaunchArgument("joint_command_topic", default_value="/fr3/joint_commands"),
         DeclareLaunchArgument("tau_command_topic", default_value="/fr3/tau_command",

@@ -34,9 +34,11 @@ class QpVelocityNode : public rclcpp::Node {
   Kinematics kinematics_;
   bool kinematics_ready_{false};
   bool have_joint_state_{false};
+  bool have_joint_effort_{false};
   bool have_twist_{false};
   Vector7d q_{Vector7d::Zero()};
   Vector7d dq_{Vector7d::Zero()};
+  Vector7d tau_{Vector7d::Zero()};
   Vector6d desired_twist_{Vector6d::Zero()};
   Vector7d previous_command_{Vector7d::Zero()};
   std::chrono::steady_clock::time_point last_twist_time_steady_{};
@@ -93,6 +95,8 @@ class QpVelocityNode : public rclcpp::Node {
   rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr joint_state_sub_;
   rclcpp::Subscription<geometry_msgs::msg::TwistStamped>::SharedPtr twist_sub_;
   rclcpp::Publisher<sensor_msgs::msg::JointState>::SharedPtr command_pub_;
+  rclcpp::Publisher<geometry_msgs::msg::TwistStamped>::SharedPtr cartesian_velocity_pub_;
+  rclcpp::Publisher<geometry_msgs::msg::WrenchStamped>::SharedPtr cartesian_wrench_pub_;
   rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr status_pub_;
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr ready_pub_;
   rclcpp::TimerBase::SharedPtr timer_;
