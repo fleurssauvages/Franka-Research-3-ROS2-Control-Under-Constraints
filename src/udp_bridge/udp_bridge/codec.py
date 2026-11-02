@@ -123,6 +123,10 @@ def apply_scale_offset(value, scale=1.0, offset=0.0):
         raise ValueError('scale and offset must be finite')
     if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
         return [apply_scale_offset(v, scale, offset) for v in value]
+    if isinstance(value, str):
+        if scale != 1.0 or offset != 0.0:
+            raise ValueError('scale/offset cannot be applied to strings')
+        return value
     if isinstance(value, bool):
         if scale != 1.0 or offset != 0.0:
             raise ValueError('scale/offset cannot be applied to bool values')
