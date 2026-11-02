@@ -67,6 +67,8 @@ class JointImpedanceController : public controller_interface::ControllerInterfac
   std::string arm_prefix_;
   std::vector<std::string> joint_names_;
   std::string command_topic_;
+  std::string commanded_torque_topic_;
+  std::string model_torque_topic_;
   // torque: effort-only JointState, compensated as impedance with zero
   // desired velocity and no position spring; impedance: legacy fields.
   bool torque_only_{false};
@@ -82,8 +84,13 @@ class JointImpedanceController : public controller_interface::ControllerInterfac
   std::array<double, kNumJoints> max_torque_{};
   std::array<double, kNumJoints> last_tau_command_{};
   std::array<double, kNumJoints> timeout_hold_position_{};
+  std::array<double, kNumJoints> previous_velocity_{};
+  std::array<double, kNumJoints> filtered_acceleration_{};
   bool timeout_hold_initialized_{false};
+  bool have_previous_velocity_{false};
   bool use_mass_damping_{false};
+  bool publish_model_torque_{true};
+  double model_acceleration_filter_tau_{0.03};
 
   // Local, explicitly operator-authorized residual learning. Inactive by default.
   bool gravity_error_compensation_enabled_{false};
@@ -132,6 +139,12 @@ class JointImpedanceController : public controller_interface::ControllerInterfac
   static constexpr const char* kRobotModelInterfaceName = "robot_model";
 
   rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr command_sub_;
+  rclcpp::Publisher<sensor_msgs::msg::JointState>::SharedPtr commanded_torque_pub_;
+  std::unique_ptr<realtime_tools::RealtimePublisher<sensor_msgs::msg::JointState>>
+      commanded_torque_realtime_pub_;
+  rclcpp::Publisher<sensor_msgs::msg::JointState>::SharedPtr model_torque_pub_;
+  std::unique_ptr<realtime_tools::RealtimePublisher<sensor_msgs::msg::JointState>>
+      model_torque_realtime_pub_;
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr ready_pub_;
   realtime_tools::RealtimeBuffer<ImpedanceCommand> command_buffer_;
 };

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <functional>
 #include <limits>
 
@@ -28,6 +29,9 @@ QpVelocityNode::QpVelocityNode() : Node("qp_velocity_controller") {
 
   frequency_ = declare_parameter<double>("frequency", 200.0);
   command_timeout_ = declare_parameter<double>("command_timeout", 0.1);
+  commanded_torque_timeout_ =
+      declare_parameter<double>("commanded_torque_timeout", 0.1);
+  model_torque_timeout_ = declare_parameter<double>("model_torque_timeout", 0.1);
   idle_safety_frequency_ = declare_parameter<double>("idle_safety_frequency", 50.0);
   repulsion_when_idle_ = declare_parameter<bool>("repulsion_when_idle", true);
   joint_limit_margin_ = declare_parameter<double>("joint_limit_margin", 0.01);
@@ -94,6 +98,14 @@ QpVelocityNode::QpVelocityNode() : Node("qp_velocity_controller") {
       "cartesian_velocity_topic", "/fr3/cartesian_velocity");
   const auto cartesian_wrench_topic = declare_parameter<std::string>(
       "cartesian_wrench_topic", "/fr3/cartesian_wrench");
+  const auto commanded_torque_topic = declare_parameter<std::string>(
+      "commanded_torque_topic", "/fr3/commanded_joint_torques");
+  const auto model_torque_topic = declare_parameter<std::string>(
+      "model_torque_topic", "/fr3/model_joint_torques");
+  const auto cartesian_command_wrench_topic = declare_parameter<std::string>(
+      "cartesian_command_wrench_topic", "/fr3/cartesian_command_wrench");
+  const auto cartesian_model_wrench_topic = declare_parameter<std::string>(
+      "cartesian_model_wrench_topic", "/fr3/cartesian_model_wrench");
 
   auto robot_qos = rclcpp::QoS(1).transient_local().reliable();
   robot_description_sub_ = create_subscription<std_msgs::msg::String>(
@@ -102,6 +114,12 @@ QpVelocityNode::QpVelocityNode() : Node("qp_velocity_controller") {
   joint_state_sub_ = create_subscription<sensor_msgs::msg::JointState>(
       joint_state_topic, rclcpp::SensorDataQoS(),
       std::bind(&QpVelocityNode::jointStateCallback, this, std::placeholders::_1));
+  commanded_torque_sub_ = create_subscription<sensor_msgs::msg::JointState>(
+      commanded_torque_topic, rclcpp::SensorDataQoS(),
+      std::bind(&QpVelocityNode::commandedTorqueCallback, this, std::placeholders::_1));
+  model_torque_sub_ = create_subscription<sensor_msgs::msg::JointState>(
+      model_torque_topic, rclcpp::SensorDataQoS(),
+      std::bind(&QpVelocityNode::modelTorqueCallback, this, std::placeholders::_1));
   twist_sub_ = create_subscription<geometry_msgs::msg::TwistStamped>(
       twist_topic, rclcpp::QoS(1).best_effort().durability_volatile(),
       std::bind(&QpVelocityNode::twistCallback, this, std::placeholders::_1));
@@ -111,6 +129,12 @@ QpVelocityNode::QpVelocityNode() : Node("qp_velocity_controller") {
       cartesian_velocity_topic, rclcpp::SensorDataQoS());
   cartesian_wrench_pub_ = create_publisher<geometry_msgs::msg::WrenchStamped>(
       cartesian_wrench_topic, rclcpp::SensorDataQoS());
+  cartesian_command_wrench_pub_ =
+      create_publisher<geometry_msgs::msg::WrenchStamped>(
+          cartesian_command_wrench_topic, rclcpp::SensorDataQoS());
+  cartesian_model_wrench_pub_ =
+      create_publisher<geometry_msgs::msg::WrenchStamped>(
+          cartesian_model_wrench_topic, rclcpp::SensorDataQoS());
   status_pub_ = create_publisher<std_msgs::msg::Float64MultiArray>("~/status", 10);
   ready_pub_ = create_publisher<std_msgs::msg::Bool>(
       "~/ready", rclcpp::QoS(1).transient_local().reliable());
@@ -121,7 +145,12 @@ QpVelocityNode::QpVelocityNode() : Node("qp_velocity_controller") {
   options.printLevel = qpOASES::PL_NONE;
   qp_->setOptions(options);
 
-  if (frequency_ <= 0.0) throw std::runtime_error("frequency must be > 0");
+  if (!std::isfinite(frequency_) || !std::isfinite(commanded_torque_timeout_) ||
+      !std::isfinite(model_torque_timeout_) || frequency_ <= 0.0 ||
+      commanded_torque_timeout_ <= 0.0 || model_torque_timeout_ <= 0.0) {
+    throw std::runtime_error(
+        "frequency, commanded_torque_timeout, and model_torque_timeout must be > 0");
+  }
   if (joint_recovery_release_margin_ < 0.0 || recovery_command_time_constant_ <= 0.0 ||
       recovery_release_tolerance_ < 0.0) {
     throw std::runtime_error("recovery release parameters are invalid");
@@ -161,6 +190,26 @@ void QpVelocityNode::jointStateCallback(const sensor_msgs::msg::JointState::Shar
   }
 }
 
+void QpVelocityNode::commandedTorqueCallback(
+    const sensor_msgs::msg::JointState::SharedPtr msg) {
+  Vector7d commanded_tau;
+  if (!extractJointEffort(*msg, joint_names_, commanded_tau)) return;
+  std::lock_guard<std::mutex> lock(mutex_);
+  commanded_tau_ = commanded_tau;
+  have_commanded_effort_ = true;
+  last_commanded_torque_time_steady_ = std::chrono::steady_clock::now();
+}
+
+void QpVelocityNode::modelTorqueCallback(
+    const sensor_msgs::msg::JointState::SharedPtr msg) {
+  Vector7d model_tau;
+  if (!extractJointEffort(*msg, joint_names_, model_tau)) return;
+  std::lock_guard<std::mutex> lock(mutex_);
+  model_tau_ = model_tau;
+  have_model_effort_ = true;
+  last_model_torque_time_steady_ = std::chrono::steady_clock::now();
+}
+
 void QpVelocityNode::twistCallback(const geometry_msgs::msg::TwistStamped::SharedPtr msg) {
   const auto x = twistToVector(*msg);
   if (!x.allFinite()) return;
@@ -171,14 +220,21 @@ void QpVelocityNode::twistCallback(const geometry_msgs::msg::TwistStamped::Share
 }
 
 void QpVelocityNode::update() {
-  Vector7d q, dq, tau;
+  Vector7d q, dq, tau, commanded_tau, model_tau;
   Vector6d twist;
-  std::chrono::steady_clock::time_point last_twist;
-  bool have_state, have_effort, have_twist;
+  std::chrono::steady_clock::time_point last_twist, last_commanded_torque,
+      last_model_torque;
+  bool have_state, have_effort, have_commanded_effort, have_model_effort, have_twist;
   {
     std::lock_guard<std::mutex> lock(mutex_);
     q = q_; dq = dq_; twist = desired_twist_; last_twist = last_twist_time_steady_;
     tau = tau_; have_effort = have_joint_effort_;
+    commanded_tau = commanded_tau_;
+    have_commanded_effort = have_commanded_effort_;
+    last_commanded_torque = last_commanded_torque_time_steady_;
+    model_tau = model_tau_;
+    have_model_effort = have_model_effort_;
+    last_model_torque = last_model_torque_time_steady_;
     have_state = have_joint_state_; have_twist = have_twist_;
   }
   if (kinematics_.tcpReady() && have_state && !ready_published_) {
@@ -207,10 +263,23 @@ void QpVelocityNode::update() {
   if (!kinematics_.compute(q, J, pose)) return;
   cartesian_velocity_pub_->publish(
       makeCartesianVelocityMessage(J * dq, root_link_, t));
+  const Matrix67d wrench_map = dampedPseudoInverse(J, pinv_damping_).transpose();
   if (have_effort) {
-    const Vector6d wrench = dampedPseudoInverse(J, pinv_damping_).transpose() * tau;
+    const Vector6d wrench = wrench_map * tau;
     cartesian_wrench_pub_->publish(
         makeCartesianWrenchMessage(wrench, root_link_, t));
+  }
+  if (have_commanded_effort &&
+      std::chrono::duration<double>(steady_now - last_commanded_torque).count()
+          <= commanded_torque_timeout_) {
+    cartesian_command_wrench_pub_->publish(makeCartesianWrenchMessage(
+        wrench_map * commanded_tau, root_link_, t));
+  }
+  if (have_model_effort &&
+      std::chrono::duration<double>(steady_now - last_model_torque).count()
+          <= model_torque_timeout_) {
+    cartesian_model_wrench_pub_->publish(
+        makeCartesianWrenchMessage(wrench_map * model_tau, root_link_, t));
   }
   const bool command_fresh = have_twist &&
       (std::chrono::duration<double>(steady_now - last_twist).count() <= command_timeout_);

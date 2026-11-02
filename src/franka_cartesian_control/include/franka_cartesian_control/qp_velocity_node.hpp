@@ -21,6 +21,8 @@ class QpVelocityNode : public rclcpp::Node {
  private:
   void robotDescriptionCallback(const std_msgs::msg::String::SharedPtr msg);
   void jointStateCallback(const sensor_msgs::msg::JointState::SharedPtr msg);
+  void commandedTorqueCallback(const sensor_msgs::msg::JointState::SharedPtr msg);
+  void modelTorqueCallback(const sensor_msgs::msg::JointState::SharedPtr msg);
   void twistCallback(const geometry_msgs::msg::TwistStamped::SharedPtr msg);
   void update();
   bool solveQp(const Matrix67d& J, const Eigen::Isometry3d& pose,
@@ -35,13 +37,19 @@ class QpVelocityNode : public rclcpp::Node {
   bool kinematics_ready_{false};
   bool have_joint_state_{false};
   bool have_joint_effort_{false};
+  bool have_commanded_effort_{false};
+  bool have_model_effort_{false};
   bool have_twist_{false};
   Vector7d q_{Vector7d::Zero()};
   Vector7d dq_{Vector7d::Zero()};
   Vector7d tau_{Vector7d::Zero()};
+  Vector7d commanded_tau_{Vector7d::Zero()};
+  Vector7d model_tau_{Vector7d::Zero()};
   Vector6d desired_twist_{Vector6d::Zero()};
   Vector7d previous_command_{Vector7d::Zero()};
   std::chrono::steady_clock::time_point last_twist_time_steady_{};
+  std::chrono::steady_clock::time_point last_commanded_torque_time_steady_{};
+  std::chrono::steady_clock::time_point last_model_torque_time_steady_{};
   std::chrono::steady_clock::time_point last_update_time_steady_{};
   std::chrono::steady_clock::time_point last_idle_safety_check_time_steady_{};
   bool have_last_update_time_{false};
@@ -69,6 +77,8 @@ class QpVelocityNode : public rclcpp::Node {
 
   double frequency_{200.0};
   double command_timeout_{0.1};
+  double commanded_torque_timeout_{0.1};
+  double model_torque_timeout_{0.1};
   double idle_safety_frequency_{50.0};
   double joint_limit_margin_{0.08};
   double joint_limit_gain_{2.0};
@@ -93,10 +103,16 @@ class QpVelocityNode : public rclcpp::Node {
 
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr robot_description_sub_;
   rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr joint_state_sub_;
+  rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr commanded_torque_sub_;
+  rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr model_torque_sub_;
   rclcpp::Subscription<geometry_msgs::msg::TwistStamped>::SharedPtr twist_sub_;
   rclcpp::Publisher<sensor_msgs::msg::JointState>::SharedPtr command_pub_;
   rclcpp::Publisher<geometry_msgs::msg::TwistStamped>::SharedPtr cartesian_velocity_pub_;
   rclcpp::Publisher<geometry_msgs::msg::WrenchStamped>::SharedPtr cartesian_wrench_pub_;
+  rclcpp::Publisher<geometry_msgs::msg::WrenchStamped>::SharedPtr
+      cartesian_command_wrench_pub_;
+  rclcpp::Publisher<geometry_msgs::msg::WrenchStamped>::SharedPtr
+      cartesian_model_wrench_pub_;
   rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr status_pub_;
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr ready_pub_;
   rclcpp::TimerBase::SharedPtr timer_;

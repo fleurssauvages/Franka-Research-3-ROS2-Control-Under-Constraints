@@ -260,7 +260,7 @@ def generate_launch_description():
         DeclareLaunchArgument("start_low_level", default_value="true"),
         DeclareLaunchArgument("enable_gripper", default_value="false",
                               description="Start the Franka Hand driver and gripper command adapter."),
-        DeclareLaunchArgument("low_level_mode", default_value="velocity"),
+        DeclareLaunchArgument("low_level_mode", default_value="impedance"),
         DeclareLaunchArgument("franka_robot_state_topic",
                               default_value="/franka_robot_state_broadcaster/robot_state"),
         DeclareLaunchArgument("franka_state_timeout", default_value="0.5"),

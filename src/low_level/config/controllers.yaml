@@ -48,7 +48,11 @@
       robot_type: fr3
       arm_prefix: ""
       command_topic: /fr3/joint_commands
+      commanded_torque_topic: /fr3/commanded_joint_torques
+      model_torque_topic: /fr3/model_joint_torques
       command_timeout: 0.1
+      model_acceleration_filter_tau: 0.03
+      publish_model_torque: true
       stiffness: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
       damping: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
       mass_damping: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]

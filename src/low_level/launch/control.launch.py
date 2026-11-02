@@ -417,6 +417,9 @@ def _setup(context):
                 "explicitly with use_fake_hardware:=true"
             )
 
+    robot_scope = f"{arm_prefix}_" if arm_prefix else ""
+    commanded_torque_topic = f"/{robot_scope}{robot_type}/commanded_joint_torques"
+    model_torque_topic = f"/{robot_scope}{robot_type}/model_joint_torques"
     runtime_yaml = os.path.join(tempfile.gettempdir(), f"low_level_controllers_{os.getpid()}.yaml")
     with open(runtime_yaml, "w", encoding="utf-8") as f:
         f.write(f'''/**:
@@ -467,8 +470,12 @@ def _setup(context):
       robot_type: "{robot_type}"
       arm_prefix: "{arm_prefix}"
       command_topic: "{impedance_command_topic}"
+      commanded_torque_topic: {json.dumps(commanded_torque_topic)}
+      model_torque_topic: {json.dumps(model_torque_topic)}
+      publish_model_torque: {str(not use_fake_hardware).lower()}
       command_mode: "{'torque' if mode == 'torque' else 'impedance'}"
       command_timeout: {command_timeout}
+      model_acceleration_filter_tau: 0.03
       stiffness: {_yaml_array(stiffness)}
       damping: {_yaml_array(damping)}
       mass_damping: {_yaml_array(mass_damping)}

@@ -55,7 +55,7 @@ JointImpedanceController::state_interface_configuration() const {
       config.names.push_back(joint + "/" + hardware_interface::HW_IF_EFFORT);
     }
   }
-  if ((use_mass_damping_ || gravity_error_compensation_enabled_ || breakaway_enabled_) && franka_robot_model_) {
+  if (franka_robot_model_) {
     const auto model_interfaces = franka_robot_model_->get_state_interface_names();
     config.names.insert(config.names.end(), model_interfaces.begin(), model_interfaces.end());
   }
@@ -68,6 +68,8 @@ JointImpedanceController::CallbackReturn JointImpedanceController::on_init() {
     auto_declare<std::string>("arm_prefix", "");
     auto_declare<std::vector<std::string>>("joint_names", {});
     auto_declare<std::string>("command_topic", "joint_commands");
+    auto_declare<std::string>("commanded_torque_topic", "/fr3/commanded_joint_torques");
+    auto_declare<std::string>("model_torque_topic", "/fr3/model_joint_torques");
     auto_declare<std::string>("command_mode", "impedance");
     auto_declare<double>("command_timeout", 0.01);
     auto_declare<std::vector<double>>("stiffness", std::vector<double>(kNumJoints, 0.0));
@@ -75,6 +77,8 @@ JointImpedanceController::CallbackReturn JointImpedanceController::on_init() {
     auto_declare<std::vector<double>>("mass_damping", std::vector<double>(kNumJoints, 0.0));
     auto_declare<double>("effort_feedforward_scale", 1.0);
     auto_declare<double>("delta_tau_max", 1.0);
+    auto_declare<double>("model_acceleration_filter_tau", 0.03);
+    auto_declare<bool>("publish_model_torque", true);
     auto_declare<std::vector<double>>("max_torque", std::vector<double>(kNumJoints, 0.0));
     auto_declare<bool>("hold_position_on_timeout", false);
 
@@ -135,6 +139,9 @@ JointImpedanceController::CallbackReturn JointImpedanceController::on_configure(
   arm_prefix_ = get_node()->get_parameter("arm_prefix").as_string();
   joint_names_ = get_node()->get_parameter("joint_names").as_string_array();
   command_topic_ = get_node()->get_parameter("command_topic").as_string();
+  commanded_torque_topic_ =
+      get_node()->get_parameter("commanded_torque_topic").as_string();
+  model_torque_topic_ = get_node()->get_parameter("model_torque_topic").as_string();
   const auto command_mode = get_node()->get_parameter("command_mode").as_string();
   if (command_mode != "impedance" && command_mode != "torque") {
     RCLCPP_ERROR(get_node()->get_logger(), "command_mode must be 'impedance' or 'torque'");
@@ -144,6 +151,9 @@ JointImpedanceController::CallbackReturn JointImpedanceController::on_configure(
   command_timeout_s_ = get_node()->get_parameter("command_timeout").as_double();
   effort_feedforward_scale_ = get_node()->get_parameter("effort_feedforward_scale").as_double();
   delta_tau_max_ = get_node()->get_parameter("delta_tau_max").as_double();
+  model_acceleration_filter_tau_ =
+      get_node()->get_parameter("model_acceleration_filter_tau").as_double();
+  publish_model_torque_ = get_node()->get_parameter("publish_model_torque").as_bool();
   hold_position_on_timeout_ = get_node()->get_parameter("hold_position_on_timeout").as_bool();
   gravity_error_compensation_enabled_ =
       get_node()->get_parameter("gravity_error_compensation_enabled").as_bool();
@@ -210,8 +220,10 @@ JointImpedanceController::CallbackReturn JointImpedanceController::on_configure(
   }
   if (!std::isfinite(command_timeout_s_) || !std::isfinite(delta_tau_max_) ||
       !std::isfinite(effort_feedforward_scale_) || command_timeout_s_ <= 0.0 ||
-      delta_tau_max_ < 0.0) {
-    RCLCPP_ERROR(get_node()->get_logger(), "command_timeout must be > 0 and delta_tau_max >= 0");
+      delta_tau_max_ < 0.0 || !std::isfinite(model_acceleration_filter_tau_) ||
+      model_acceleration_filter_tau_ <= 0.0) {
+    RCLCPP_ERROR(get_node()->get_logger(),
+                 "command_timeout and model_acceleration_filter_tau must be > 0; delta_tau_max >= 0");
     return CallbackReturn::ERROR;
   }
 
@@ -342,7 +354,8 @@ JointImpedanceController::CallbackReturn JointImpedanceController::on_configure(
       mass_damping_.begin(), mass_damping_.end(),
       [](double gain) { return std::abs(gain) > 0.0; });
 
-  if (use_mass_damping_ || gravity_error_compensation_enabled_ || breakaway_enabled_) {
+  if (publish_model_torque_ || use_mass_damping_ ||
+      gravity_error_compensation_enabled_ || breakaway_enabled_) {
     const std::string interface_prefix =
         (arm_prefix_.empty() ? std::string{} : arm_prefix_ + "_") + robot_type_ + "/";
     franka_robot_model_ = std::make_unique<franka_semantic_components::FrankaRobotModel>(
@@ -385,6 +398,22 @@ JointImpedanceController::CallbackReturn JointImpedanceController::on_configure(
   command_sub_ = get_node()->create_subscription<sensor_msgs::msg::JointState>(
       command_topic_, rclcpp::QoS(1).best_effort().durability_volatile(),
       std::bind(&JointImpedanceController::command_callback, this, std::placeholders::_1));
+  commanded_torque_pub_ = get_node()->create_publisher<sensor_msgs::msg::JointState>(
+      commanded_torque_topic_, rclcpp::SensorDataQoS());
+  commanded_torque_realtime_pub_ =
+      std::make_unique<realtime_tools::RealtimePublisher<sensor_msgs::msg::JointState>>(
+          commanded_torque_pub_);
+  auto& commanded_torque_msg = commanded_torque_realtime_pub_->msg_;
+  commanded_torque_msg.name = joint_names_;
+  commanded_torque_msg.effort.resize(kNumJoints, 0.0);
+  model_torque_pub_ = get_node()->create_publisher<sensor_msgs::msg::JointState>(
+      model_torque_topic_, rclcpp::SensorDataQoS());
+  model_torque_realtime_pub_ =
+      std::make_unique<realtime_tools::RealtimePublisher<sensor_msgs::msg::JointState>>(
+          model_torque_pub_);
+  auto& model_torque_msg = model_torque_realtime_pub_->msg_;
+  model_torque_msg.name = joint_names_;
+  model_torque_msg.effort.resize(kNumJoints, 0.0);
   ready_pub_ = get_node()->create_publisher<std_msgs::msg::Bool>(
       "~/ready", rclcpp::QoS(1).transient_local().reliable());
 
@@ -421,6 +450,9 @@ JointImpedanceController::CallbackReturn JointImpedanceController::on_activate(
     const rclcpp_lifecycle::State&)
 {
   last_tau_command_.fill(0.0);
+  previous_velocity_.fill(0.0);
+  filtered_acceleration_.fill(0.0);
+  have_previous_velocity_ = false;
   breakaway_applied_.fill(0.0);
   timeout_hold_initialized_ = false;
   // Never replay a command received before activation (particularly torque).
@@ -430,7 +462,7 @@ JointImpedanceController::CallbackReturn JointImpedanceController::on_activate(
   CalibrationAuthorization disabled;
   calibration_buffer_.writeFromNonRT(disabled);
 
-  if ((use_mass_damping_ || gravity_error_compensation_enabled_ || breakaway_enabled_) && franka_robot_model_) {
+  if (franka_robot_model_) {
     franka_robot_model_->assign_loaned_state_interfaces(state_interfaces_);
   }
 
@@ -468,7 +500,7 @@ JointImpedanceController::CallbackReturn JointImpedanceController::on_deactivate
     }
   }
 
-  if ((use_mass_damping_ || gravity_error_compensation_enabled_ || breakaway_enabled_) && franka_robot_model_) {
+  if (franka_robot_model_) {
     franka_robot_model_->release_interfaces();
   }
 
@@ -484,7 +516,6 @@ JointImpedanceController::CallbackReturn JointImpedanceController::on_deactivate
 
 controller_interface::return_type JointImpedanceController::update(
     const rclcpp::Time& time, const rclcpp::Duration& period) {
-  (void)time;
   std::array<double, kNumJoints> q{};
   std::array<double, kNumJoints> dq{};
   if (!read_joint_state(q, dq)) {
@@ -494,6 +525,27 @@ controller_interface::return_type JointImpedanceController::update(
       1000,
       "Failed to read joint state interfaces");
     return controller_interface::return_type::ERROR;
+  }
+
+  const double dt = period.seconds();
+  if (!std::isfinite(dt) || dt <= 0.0) {
+    RCLCPP_ERROR_THROTTLE(
+        get_node()->get_logger(), *get_node()->get_clock(), 1000,
+        "Invalid update period while estimating model acceleration");
+    return controller_interface::return_type::ERROR;
+  }
+  if (!have_previous_velocity_) {
+    previous_velocity_ = dq;
+    filtered_acceleration_.fill(0.0);
+    have_previous_velocity_ = true;
+  } else {
+    const double alpha = dt / (model_acceleration_filter_tau_ + dt);
+    for (std::size_t i = 0; i < kNumJoints; ++i) {
+      const double raw_acceleration = (dq[i] - previous_velocity_[i]) / dt;
+      filtered_acceleration_[i] +=
+          alpha * (raw_acceleration - filtered_acceleration_[i]);
+      previous_velocity_[i] = dq[i];
+    }
   }
 
   const auto* command = command_buffer_.readFromRT();
@@ -510,8 +562,37 @@ controller_interface::return_type JointImpedanceController::update(
   }
 
   std::array<double, kNumJoints> tau_desired{};
+  std::array<double, kNumJoints> tau_model{};
   std::array<double, kNumJoints> velocity_error{};
   bool apply_velocity_feedback = false;
+
+  std::array<double, kNumJoints> gravity{};
+  std::array<double, 49> mass{};
+  if (franka_robot_model_) {
+    gravity = franka_robot_model_->getGravityForceVector();
+    const auto coriolis = franka_robot_model_->getCoriolisForceVector();
+    mass = franka_robot_model_->getMassMatrix();
+    for (std::size_t i = 0; i < kNumJoints; ++i) {
+      if (!std::isfinite(gravity[i]) || !std::isfinite(coriolis[i]) ||
+          !std::isfinite(filtered_acceleration_[i])) {
+        RCLCPP_ERROR_THROTTLE(
+            get_node()->get_logger(), *get_node()->get_clock(), 1000,
+            "Franka model or acceleration estimate is non-finite for joint %zu", i);
+        return controller_interface::return_type::ERROR;
+      }
+      double inertial_torque = 0.0;
+      for (std::size_t j = 0; j < kNumJoints; ++j) {
+        inertial_torque += mass[i + kNumJoints * j] * filtered_acceleration_[j];
+      }
+      if (!std::isfinite(inertial_torque)) {
+        RCLCPP_ERROR_THROTTLE(
+            get_node()->get_logger(), *get_node()->get_clock(), 1000,
+            "Inertial torque estimate is non-finite for joint %zu", i);
+        return controller_interface::return_type::ERROR;
+      }
+      tau_model[i] = gravity[i] + coriolis[i] + inertial_torque;
+    }
+  }
 
   if (!timed_out) {
     for (std::size_t i = 0; i < kNumJoints; ++i) {
@@ -586,9 +667,6 @@ controller_interface::return_type JointImpedanceController::update(
   // proxy; it is NOT a validated external wrench measurement. Positive feedback
   // must only be used after observing its behavior with the robot secured.
   if (breakaway_enabled_ && franka_robot_model_) {
-    const auto gravity = franka_robot_model_->getGravityForceVector();
-    const double dt = period.seconds();
-    if (!std::isfinite(dt) || dt <= 0.0) return controller_interface::return_type::ERROR;
     for (std::size_t i = 0; i < kNumJoints; ++i) {
       const auto measured = state_interfaces_[3 * i + 2].get_optional();
       if (!measured.has_value() || !std::isfinite(measured.value()) ||
@@ -697,6 +775,26 @@ controller_interface::return_type JointImpedanceController::update(
       return controller_interface::return_type::ERROR;
     }
     last_tau_command_[i] = tau;
+  }
+
+  if (commanded_torque_realtime_pub_ &&
+      commanded_torque_realtime_pub_->trylock()) {
+    auto& msg = commanded_torque_realtime_pub_->msg_;
+    msg.header.stamp = time;
+    for (std::size_t i = 0; i < kNumJoints; ++i) {
+      msg.effort[i] = tau_model[i] + last_tau_command_[i];
+    }
+    commanded_torque_realtime_pub_->unlockAndPublish();
+  }
+
+  if (publish_model_torque_ && model_torque_realtime_pub_ &&
+      model_torque_realtime_pub_->trylock()) {
+    auto& msg = model_torque_realtime_pub_->msg_;
+    msg.header.stamp = time;
+    for (std::size_t i = 0; i < kNumJoints; ++i) {
+      msg.effort[i] = tau_model[i];
+    }
+    model_torque_realtime_pub_->unlockAndPublish();
   }
 
   return controller_interface::return_type::OK;

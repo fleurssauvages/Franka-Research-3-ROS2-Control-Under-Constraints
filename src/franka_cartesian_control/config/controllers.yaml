@@ -16,6 +16,12 @@
     twist_topic: /fr3/cartesian_twist_command
     cartesian_velocity_topic: /fr3/cartesian_velocity
     cartesian_wrench_topic: /fr3/cartesian_wrench
+    commanded_torque_topic: /fr3/commanded_joint_torques
+    model_torque_topic: /fr3/model_joint_torques
+    commanded_torque_timeout: 0.1
+    model_torque_timeout: 0.1
+    cartesian_command_wrench_topic: /fr3/cartesian_command_wrench
+    cartesian_model_wrench_topic: /fr3/cartesian_model_wrench
     joint_command_topic: /fr3/joint_commands
 
     # Conservative software limits for the high-level controller.
