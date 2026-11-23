@@ -753,19 +753,51 @@ controller_interface::return_type JointImpedanceController::update(
     }
   }
 
+  std::array<double, kNumJoints> tau_command = tau_desired;
+  for (double torque : tau_command) {
+    if (!std::isfinite(torque)) {
+      RCLCPP_ERROR_THROTTLE(
+          get_node()->get_logger(), *get_node()->get_clock(), 1000,
+          "Joint torque command is non-finite");
+      return controller_interface::return_type::ERROR;
+    }
+  }
+
+  // Absolute torque limits are applied to the complete vector with one common
+  // scale, preserving the direction of the commanded torque vector.
+  double absolute_scale = 1.0;
   for (std::size_t i = 0; i < kNumJoints; ++i) {
-    double tau = tau_desired[i];
-
-    if (max_torque_[i] > 0.0) {
-      tau = std::clamp(tau, -max_torque_[i], max_torque_[i]);
+    if (max_torque_[i] > 0.0 && std::abs(tau_command[i]) > max_torque_[i]) {
+      absolute_scale =
+          std::min(absolute_scale, max_torque_[i] / std::abs(tau_command[i]));
     }
-
-    if (delta_tau_max_ > 0.0) {
-      const double delta = std::clamp(
-          tau - last_tau_command_[i], -delta_tau_max_, delta_tau_max_);
-      tau = last_tau_command_[i] + delta;
+  }
+  if (absolute_scale < 1.0) {
+    for (double& torque : tau_command) {
+      torque *= absolute_scale;
     }
+  }
 
+  // The torque derivative limit is also vector-scaled. This is a per-update
+  // limit, matching the existing delta_tau_max launch parameter semantics.
+  if (delta_tau_max_ > 0.0) {
+    double derivative_scale = 1.0;
+    for (std::size_t i = 0; i < kNumJoints; ++i) {
+      const double delta = tau_command[i] - last_tau_command_[i];
+      if (std::abs(delta) > delta_tau_max_) {
+        derivative_scale =
+            std::min(derivative_scale, delta_tau_max_ / std::abs(delta));
+      }
+    }
+    for (std::size_t i = 0; i < kNumJoints; ++i) {
+      tau_command[i] =
+          last_tau_command_[i] +
+          (tau_command[i] - last_tau_command_[i]) * derivative_scale;
+    }
+  }
+
+  for (std::size_t i = 0; i < kNumJoints; ++i) {
+    const double tau = tau_command[i];
     if (!command_interfaces_[i].set_value(tau)) {
       RCLCPP_ERROR_THROTTLE(
         get_node()->get_logger(),

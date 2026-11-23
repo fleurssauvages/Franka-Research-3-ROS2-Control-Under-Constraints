@@ -44,26 +44,6 @@
     # it stays on until the joint has returned this far inside the valid region.
     joint_recovery_release_margin: 0.03
 
-    # Half-space constraints use: normal.dot(tcp_position) >= offset + margin.
-    # Table example: z >= 0.0 + 0.08.
-    # Add more planes by appending one name, 3 normal values, one offset,
-    # one margin and one gain for each plane.
-    enforce_surfaces: true
-    surfaces.names: [table]
-    surfaces.normals: [0.0, 0.0, 1.0]
-    surfaces.offsets: [0.0]
-    surfaces.margins: [0.01]
-    surfaces.gains: [2.0]
-
-    # Soft surface recovery is exactly zero while the TCP is on the valid side.
-    # It activates only after normal.dot(p) < offset + margin.
-    surfaces.repulsion_gains: [3.0]
-    surfaces.repulsion_weights: [2.0]
-    surfaces.max_repulsion_velocities: [0.05]
-    # No pre-contact repulsion: this hysteresis distance is used only AFTER a
-    # violation has activated recovery, to carry the TCP back inside smoothly.
-    surfaces.release_distances: [0.015]
-
 ik_velocity_controller:
   ros__parameters:
     pinv_damping: 0.02
@@ -72,6 +52,19 @@ ik_velocity_controller:
 
 qp_velocity_controller:
   ros__parameters:
+    # Half-space constraints use: normal.dot(tcp_position) >= offset + margin.
+    # The table constraint is QP-only.
+    enforce_surfaces: true
+    surfaces.names: [table]
+    surfaces.normals: [0.0, 0.0, 1.0]
+    surfaces.offsets: [0.0]
+    surfaces.margins: [0.01]
+    surfaces.gains: [2.0]
+    surfaces.repulsion_gains: [3.0]
+    surfaces.repulsion_weights: [2.0]
+    surfaces.max_repulsion_velocities: [0.05]
+    surfaces.release_distances: [0.015]
+
     # Cost: ||W(J qdot - xdot_des)||^2 + posture + regularization.
     task_weights: [1.0, 1.0, 1.0, 0.30, 0.30, 0.30]
     regularization: 0.0001

@@ -400,7 +400,7 @@ Use Cartesian velocity control to command a TCP translation/rotation rate. The h
 ### 6.1 QP controller (constraint-aware)
 
 ```bash
-ros2 launch franka_cartesian_control cartesian_control.launch.py \
+ros2 launch franka_cartesian_control velocity_control.launch.py \
   controller:=qp
 ```
 
@@ -411,7 +411,7 @@ QP constraints are valuable safeguards, but **they do not certify collision-free
 ### 6.2 IK controller (kinematic baseline)
 
 ```bash
-ros2 launch franka_cartesian_control cartesian_control.launch.py \
+ros2 launch franka_cartesian_control velocity_control.launch.py \
   controller:=ik
 ```
 
@@ -419,20 +419,20 @@ The inverse-kinematics (**IK**) controller converts desired Cartesian twist into
 
 ### 6.3 Choose the underlying hardware mode
 
-The Cartesian velocity launch defaults to **low-level velocity**. To use impedance (for example, when you need the calibrated friction feedforward):
+The Cartesian velocity launch defaults to `low_level_mode:=auto`: this selects **impedance** for `ik` and `qp`, and **torque** for `ik_force`. To explicitly use the low-level velocity controller:
 
 ```bash
-ros2 launch franka_cartesian_control cartesian_control.launch.py \
-  controller:=qp \
-  low_level_mode:=impedance
-```
-
-Or explicitly choose velocity:
-
-```bash
-ros2 launch franka_cartesian_control cartesian_control.launch.py \
+ros2 launch franka_cartesian_control velocity_control.launch.py \
   controller:=qp \
   low_level_mode:=velocity
+```
+
+To select impedance explicitly (for example, when you need the calibrated friction feedforward):
+
+```bash
+ros2 launch franka_cartesian_control velocity_control.launch.py \
+  controller:=qp \
+  low_level_mode:=impedance
 ```
 
 For an initial impedance run, consider explicitly setting the high-level forwarding argument `impedance_friction_compensation_scale:=0.3`, after verifying it exists in your installed launch file with `--show-args`.
@@ -442,7 +442,7 @@ For an initial impedance run, consider explicitly setting the high-level forward
 `ik_force` maps a Cartesian wrench to seven joint torques using the current KDL Jacobian: **`tau_ext = J(q)^T F_desired`**. Its output is `/fr3/tau_command`, which is handled by the low-level `torque` mode. With the Cartesian launch's automatic low-level selection, `controller:=ik_force` selects that mode without a separate low-level launch.
 
 ```bash
-ros2 launch franka_cartesian_control cartesian_control.launch.py \
+ros2 launch franka_cartesian_control velocity_control.launch.py \
   controller:=ik_force
 ```
 
@@ -595,7 +595,7 @@ When enabled, the launch automatically starts the official Franka Hand driver an
 **Example — Enable gripper control:**
 
 ```bash
-ros2 launch franka_cartesian_control cartesian_control.launch.py \
+ros2 launch franka_cartesian_control velocity_control.launch.py \
     controller:=qp \
     enable_gripper:=true
 ```
@@ -892,7 +892,7 @@ ros2 topic hz /franka/joint_states
 ros2 topic info -v /fr3/cartesian_twist_command
 
 # Show the parameters available in the current launch file.
-ros2 launch franka_cartesian_control cartesian_control.launch.py --show-args
+ros2 launch franka_cartesian_control velocity_control.launch.py --show-args
 ros2 launch franka_cartesian_control position_control.launch.py --show-args
 
 # View current measured TCP pose during PID/LMPC operation.
@@ -907,9 +907,9 @@ ros2 topic echo --once /fr3/cartesian_pose
 | **Low-level impedance** | `ros2 launch low_level control.launch.py mode:=impedance` |
 | **Low-level torque** | `ros2 launch low_level control.launch.py mode:=torque` |
 | **Low-level velocity** | `ros2 launch low_level control.launch.py mode:=velocity` |
-| **Cartesian twist via QP** | `ros2 launch franka_cartesian_control cartesian_control.launch.py controller:=qp` |
-| **Cartesian twist via IK** | `ros2 launch franka_cartesian_control cartesian_control.launch.py controller:=ik` |
-| **Cartesian force via IK Jacobian** | `ros2 launch franka_cartesian_control cartesian_control.launch.py controller:=ik_force` |
+| **Cartesian twist via QP** | `ros2 launch franka_cartesian_control velocity_control.launch.py controller:=qp` |
+| **Cartesian twist via IK** | `ros2 launch franka_cartesian_control velocity_control.launch.py controller:=ik` |
+| **Cartesian force via IK Jacobian** | `ros2 launch franka_cartesian_control velocity_control.launch.py controller:=ik_force` |
 | **PID pose control** | `ros2 launch franka_cartesian_control position_control.launch.py position_controller:=pid velocity_controller:=qp` |
 | **LMPC pose control** | `ros2 launch franka_cartesian_control position_control.launch.py position_controller:=lmpc velocity_controller:=qp` |
 | **External UDP bridge** | `ros2 launch udp_bridge udp_bridge.launch.py` (with your JSON configs) |

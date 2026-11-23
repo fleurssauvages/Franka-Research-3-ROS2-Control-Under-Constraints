@@ -138,9 +138,9 @@ IkForceNode::IkForceNode() : Node("ik_force_controller") {
 }
 
 bool IkForceNode::frameIsRoot(const std::string& frame) const {
-  // Empty frame means the configured root frame, matching existing twist IK.
-  // Other frames require an explicit TF transform, not an implicit rotation.
-  return frame.empty() || frame == root_link_;
+  // Empty or unset frame means the configured root frame. Other frames require
+  // an explicit TF transform, not an implicit rotation.
+  return frame.empty() || frame == "None" || frame == root_link_;
 }
 
 void IkForceNode::robotDescriptionCallback(const std_msgs::msg::String::SharedPtr msg) {

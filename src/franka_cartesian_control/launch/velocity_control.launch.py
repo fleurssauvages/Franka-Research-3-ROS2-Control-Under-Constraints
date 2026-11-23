@@ -67,7 +67,7 @@ def _setup(context):
     idle_safety_frequency = float(LaunchConfiguration("idle_safety_frequency").perform(context))
     low_level_mode = LaunchConfiguration("low_level_mode").perform(context).strip().lower()
     if low_level_mode == "auto":
-        low_level_mode = "torque" if controller == "ik_force" else "velocity"
+        low_level_mode = "torque" if controller == "ik_force" else "impedance"
     if low_level_mode not in ("velocity", "impedance", "torque"):
         raise RuntimeError("low_level_mode must be 'auto', 'velocity', 'impedance', or 'torque'")
     if (controller == "ik_force") != (low_level_mode == "torque"):
@@ -248,7 +248,7 @@ def generate_launch_description():
         DeclareLaunchArgument("readiness_warn_after", default_value="5.0",
                               description="Seconds before readiness gates log missing conditions"),
         DeclareLaunchArgument("low_level_mode", default_value="auto",
-                              description="auto: velocity for ik/qp and torque for ik_force; or velocity/impedance/torque"),
+                              description="auto: impedance for ik/qp and torque for ik_force; or velocity/impedance/torque"),
         DeclareLaunchArgument("low_level_command_timeout", default_value="0.1"),
         DeclareLaunchArgument(
             "low_level_tracking_time_constant", default_value="0.03",

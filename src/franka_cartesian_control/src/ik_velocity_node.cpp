@@ -33,7 +33,7 @@ IkVelocityNode::IkVelocityNode() : Node("ik_velocity_controller") {
   nullspace_gain_ = declare_parameter<double>("nullspace_gain", 0.0);
   joint_limit_margin_ = declare_parameter<double>("joint_limit_margin", 0.08);
   joint_limit_gain_ = declare_parameter<double>("joint_limit_gain", 2.0);
-  enforce_surfaces_ = declare_parameter<bool>("enforce_surfaces", true);
+  enforce_surfaces_ = declare_parameter<bool>("enforce_surfaces", false);
 
   max_velocity_ = vec7(declare_parameter<std::vector<double>>(
       "max_velocity", {1.0,1.0,1.0,1.0,1.5,1.5,1.5}), "max_velocity");

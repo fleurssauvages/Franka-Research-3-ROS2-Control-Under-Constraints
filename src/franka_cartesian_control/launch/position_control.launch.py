@@ -39,7 +39,7 @@ def _setup(context):
 
     low_level_stack = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
-            os.path.join(package_share, "launch", "cartesian_control.launch.py")
+            os.path.join(package_share, "launch", "velocity_control.launch.py")
         ),
         launch_arguments={
             "controller": velocity_controller,

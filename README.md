@@ -983,7 +983,7 @@ Run-time `true/false` values can differ from the defaults above when a launch ar
 
 ### Interaction with high-level controllers and timeouts
 
-Both features are impedance-specific. In the referenced low-level launch implementation, setting either feature to `true` with `mode:=velocity` raises a startup error. If your local launch has been patched to **ignore** these options in velocity mode, that behavior depends on the patch; otherwise set both to `false` for velocity launches. Higher-level `position_control.launch.py` and `cartesian_control.launch.py` can pass these parameters only if they explicitly declare and forward the corresponding `impedance_*` arguments. Verify with `ros2 launch <pkg> <file> --show-args`.
+Both features are impedance-specific. In the referenced low-level launch implementation, setting either feature to `true` with `mode:=velocity` raises a startup error. If your local launch has been patched to **ignore** these options in velocity mode, that behavior depends on the patch; otherwise set both to `false` for velocity launches. Higher-level `position_control.launch.py` and `velocity_control.launch.py` can pass these parameters only if they explicitly declare and forward the corresponding `impedance_*` arguments. Verify with `ros2 launch <pkg> <file> --show-args`.
 
 ### Correctly inspect the effective settings
 
@@ -1013,7 +1013,7 @@ Launch the IK stack with its default low-level velocity controller:
 
 ```bash
 
-ros2 launch franka_cartesian_control cartesian_control.launch.py \\
+ros2 launch franka_cartesian_control velocity_control.launch.py \\
 
   robot_ip:=192.16.0.1 \\
 
@@ -1073,7 +1073,7 @@ Launch:
 
 ```bash
 
-ros2 launch franka_cartesian_control cartesian_control.launch.py \\
+ros2 launch franka_cartesian_control velocity_control.launch.py \\
 
   robot_ip:=192.16.0.1 \\
 
@@ -1087,7 +1087,7 @@ The same `/fr3/cartesian_twist_command` interface is used as for IK.
 
 ### Default Cartesian velocity launch limits
 
-The standalone `cartesian_control.launch.py` launch defaults are:
+The standalone `velocity_control.launch.py` launch defaults are:
 
 ```text
 
@@ -1166,10 +1166,10 @@ Joint effort      tau_ext = J(q)^T F
 Launch it with:
 
 ```bash
-ros2 launch franka_cartesian_control cartesian_control.launch.py controller:=ik_force
+ros2 launch franka_cartesian_control velocity_control.launch.py controller:=ik_force
 ```
 
-With `low_level_mode:=auto` (the Cartesian launch default), `ik_force` selects `low_level_mode:=torque` automatically. The `ik` and `qp` selections retain their existing velocity/impedance paths. The force controller is **not** a measured-force-feedback or contact-force-regulation loop: it maps a requested wrench to torque, so a nonzero wrench can move the robot unexpectedly.
+With `low_level_mode:=auto` (the Cartesian launch default), `ik_force` selects `low_level_mode:=torque`; `ik` and `qp` select `low_level_mode:=impedance`. The force controller is **not** a measured-force-feedback or contact-force-regulation loop: it maps a requested wrench to torque, so a nonzero wrench can move the robot unexpectedly.
 
 The default input is `geometry_msgs/msg/WrenchStamped` on `/fr3/cartesian_wrench_command`. A safe communications smoke test uses an all-zero wrench:
 
@@ -1199,7 +1199,7 @@ Example QP + impedance:
 
 ```bash
 
-ros2 launch franka_cartesian_control cartesian_control.launch.py \\
+ros2 launch franka_cartesian_control velocity_control.launch.py \\
 
   robot_ip:=192.16.0.1 \\
 
@@ -1489,7 +1489,7 @@ Gripper actuation is **disabled by default** in all low-level, Cartesian control
 To enable gripper control, launch the desired controller with:
 
 ```bash
-ros2 launch franka_cartesian_control cartesian_control.launch.py \
+ros2 launch franka_cartesian_control velocity_control.launch.py \
     controller:=qp \
     enable_gripper:=true
 ```
@@ -1823,13 +1823,13 @@ For `motion_mode:=qp`, the QP controller uses the live Desk end-effector transfo
 
 The Franka full-state broadcaster can be disabled for joint-only workflows. Every Cartesian launch in this project enables it because a live Desk `F_T_EE` is required.
 
-## 21.2 `franka_cartesian_control/cartesian_control.launch.py`
+## 21.2 `franka_cartesian_control/velocity_control.launch.py`
 
 | Argument | Default |
 |---|---|
 | `controller` | `qp` |
 | `start_low_level` | `true` |
-| `low_level_mode` | `velocity` |
+| `low_level_mode` | `auto` |
 | `frequency` | `200.0` |
 | `max_velocity` | `[4,4,4,4,3,3,3]` |
 | `max_acceleration` | `[3,3,3,3,3,3,3]` |
@@ -1851,7 +1851,7 @@ The Franka full-state broadcaster can be disabled for joint-only workflows. Ever
 | `position_controller` | `pid` |
 | `velocity_controller` | `qp` |
 | `start_low_level` | `true` |
-| `low_level_mode` | `velocity` |
+| `low_level_mode` | `impedance` |
 | `position_frequency` | `50.0` |
 | `pose_watchdog_timeout` | `0.50` |
 | `max_velocity` | `[1,1,1,1,1.5,1.5,1.5]` |
@@ -1919,7 +1919,7 @@ If low-level bringup is already running, disable the nested bringup:
 
 ```bash
 
-ros2 launch franka_cartesian_control cartesian_control.launch.py \\
+ros2 launch franka_cartesian_control velocity_control.launch.py \\
 
   controller:=qp \\
 
