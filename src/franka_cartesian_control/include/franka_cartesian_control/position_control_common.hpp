@@ -16,6 +16,10 @@
 
 namespace franka_cartesian_control {
 
+inline bool isRootOrUnsetFrame(const std::string& frame, const std::string& root) {
+  return frame.empty() || frame == "None" || frame == root;
+}
+
 inline Vector6d poseError(const Eigen::Isometry3d& current,
                           const Eigen::Isometry3d& desired) {
   Vector6d error = Vector6d::Zero();

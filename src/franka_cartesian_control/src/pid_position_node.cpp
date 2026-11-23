@@ -98,7 +98,7 @@ void PidPositionNode::jointStateCallback(const sensor_msgs::msg::JointState::Sha
 }
 
 void PidPositionNode::desiredPoseCallback(const geometry_msgs::msg::PoseStamped::SharedPtr msg) {
-  if (!msg->header.frame_id.empty() && msg->header.frame_id != root_link_) {
+  if (!isRootOrUnsetFrame(msg->header.frame_id, root_link_)) {
     RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000,
                          "Desired pose frame '%s' differs from controller root '%s'; no TF transform is applied",
                          msg->header.frame_id.c_str(), root_link_.c_str());

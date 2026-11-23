@@ -1387,6 +1387,15 @@ alpha  = exp(-dt / tau)
 
 where the decision variable `u` is the desired Cartesian twist sent to the downstream QP/IK controller.
 
+LMPC tracks a rest-to-rest fifth-order minimum-jerk pose reference between the
+current TCP pose and each new target. Its duration is chosen from the configured
+`max_twist` and `max_acceleration` limits, and orientation follows the shortest
+rotation path. Repeated messages with an unchanged target refresh the pose
+watchdog without restarting the trajectory; changing the target replans from
+the current measured pose. The optimizer continues to enforce its twist,
+slew-rate, and obstacle constraints, so the executed motion may differ from
+the ideal reference.
+
 Important launch defaults are:
 
 ```text

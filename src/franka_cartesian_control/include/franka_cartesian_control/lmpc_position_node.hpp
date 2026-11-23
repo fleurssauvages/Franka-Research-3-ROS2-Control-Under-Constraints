@@ -59,6 +59,8 @@ class LmpcPositionNode : public rclcpp::Node {
   bool solve(const Vector6d& error,
              const Vector6d& measured_twist,
              const Eigen::Vector3d& tcp_position,
+             const std::vector<Eigen::Isometry3d>& reference_poses,
+             const std::vector<Vector6d>& reference_twists,
              Vector6d& command);
 
   void installDefaultTable();
@@ -120,6 +122,11 @@ class LmpcPositionNode : public rclcpp::Node {
   Vector7d dq_{Vector7d::Zero()};
   Eigen::Isometry3d desired_pose_{Eigen::Isometry3d::Identity()};
   std::chrono::steady_clock::time_point last_pose_command_time_steady_{};
+  Eigen::Isometry3d reference_start_pose_{Eigen::Isometry3d::Identity()};
+  Eigen::Isometry3d reference_goal_pose_{Eigen::Isometry3d::Identity()};
+  std::chrono::steady_clock::time_point reference_start_time_steady_{};
+  double reference_duration_{0.0};
+  bool have_reference_{false};
   Vector6d previous_command_{Vector6d::Zero()};
   bool have_previous_command_{false};
 

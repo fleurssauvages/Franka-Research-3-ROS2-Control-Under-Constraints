@@ -41,6 +41,78 @@ bool allPositive(const Vector6d& value) {
   return true;
 }
 
+struct PoseReferenceSample {
+  Eigen::Isometry3d pose{Eigen::Isometry3d::Identity()};
+  Vector6d twist{Vector6d::Zero()};
+};
+
+Eigen::Vector3d rotationVector(const Eigen::Matrix3d& rotation) {
+  const Eigen::AngleAxisd angle_axis(rotation);
+  if (std::abs(angle_axis.angle()) < 1e-12) return Eigen::Vector3d::Zero();
+  return angle_axis.axis() * angle_axis.angle();
+}
+
+PoseReferenceSample evaluatePoseReference(const Eigen::Isometry3d& start,
+                                          const Eigen::Isometry3d& goal,
+                                          double elapsed,
+                                          double duration) {
+  const double progress = std::clamp(elapsed / duration, 0.0, 1.0);
+  const double progress2 = progress * progress;
+  const double progress3 = progress2 * progress;
+  const double progress4 = progress3 * progress;
+  const double progress5 = progress4 * progress;
+  const double scale = 10.0 * progress3 - 15.0 * progress4 + 6.0 * progress5;
+  const double scale_rate =
+      progress >= 1.0
+          ? 0.0
+          : (30.0 * progress2 - 60.0 * progress3 + 30.0 * progress4) / duration;
+
+  PoseReferenceSample sample;
+  const Eigen::Vector3d translation_delta = goal.translation() - start.translation();
+  const Eigen::Vector3d rotation_delta =
+      rotationVector(goal.linear() * start.linear().transpose());
+  sample.pose.translation() = start.translation() + scale * translation_delta;
+  const double angle = rotation_delta.norm();
+  Eigen::Vector3d axis = Eigen::Vector3d::UnitX();
+  if (angle > 1e-12) axis = rotation_delta / angle;
+  sample.pose.linear() =
+      Eigen::AngleAxisd(scale * angle, axis).toRotationMatrix() * start.linear();
+  sample.twist.head<3>() = scale_rate * translation_delta;
+  sample.twist.tail<3>() = scale_rate * rotation_delta;
+  return sample;
+}
+
+double poseReferenceDuration(const Eigen::Isometry3d& start,
+                             const Eigen::Isometry3d& goal,
+                             const Vector6d& max_twist,
+                             const Vector6d& max_acceleration,
+                             double minimum_duration) {
+  Vector6d displacement;
+  displacement.head<3>() = goal.translation() - start.translation();
+  displacement.tail<3>() =
+      rotationVector(goal.linear() * start.linear().transpose());
+
+  double duration = minimum_duration;
+  constexpr double kMaximumProgressRate = 1.875;
+  constexpr double kMaximumProgressAcceleration = 5.773502691896258;
+  for (int i = 0; i < 6; ++i) {
+    const double distance = std::abs(displacement(i));
+    duration = std::max(duration, kMaximumProgressRate * distance / max_twist(i));
+    duration = std::max(
+        duration, std::sqrt(kMaximumProgressAcceleration * distance / max_acceleration(i)));
+  }
+  return duration;
+}
+
+bool poseChanged(const Eigen::Isometry3d& lhs, const Eigen::Isometry3d& rhs) {
+  constexpr double kPositionThreshold = 1e-4;
+  constexpr double kOrientationThreshold = 1e-4;
+  const double position_change = (lhs.translation() - rhs.translation()).norm();
+  const Eigen::AngleAxisd rotation_change(rhs.linear() * lhs.linear().transpose());
+  return position_change > kPositionThreshold ||
+         std::abs(rotation_change.angle()) > kOrientationThreshold;
+}
+
 }  // namespace
 
 LmpcPositionNode::LmpcPositionNode() : Node("lmpc_position_controller") {
@@ -191,7 +263,7 @@ void LmpcPositionNode::jointStateCallback(const sensor_msgs::msg::JointState::Sh
 }
 
 void LmpcPositionNode::desiredPoseCallback(const geometry_msgs::msg::PoseStamped::SharedPtr msg) {
-  if (!msg->header.frame_id.empty() && msg->header.frame_id != root_link_) {
+  if (!isRootOrUnsetFrame(msg->header.frame_id, root_link_)) {
     RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000,
                          "Desired pose frame '%s' differs from controller root '%s'; no TF transform is applied",
                          msg->header.frame_id.c_str(), root_link_.c_str());
@@ -494,6 +566,8 @@ void LmpcPositionNode::rebuildQpMatrices() {
 bool LmpcPositionNode::solve(const Vector6d& error,
                              const Vector6d& measured_twist,
                              const Eigen::Vector3d& tcp_position,
+                             const std::vector<Eigen::Isometry3d>& reference_poses,
+                             const std::vector<Vector6d>& reference_twists,
                              Vector6d& command) {
   const double dt = 1.0 / frequency_;
   const double alpha = std::exp(-dt / velocity_tracking_time_constant_);
@@ -508,11 +582,19 @@ bool LmpcPositionNode::solve(const Vector6d& error,
   Eigen::VectorXd velocity_base(n_variables_);
   Vector6d predicted_error = error;
   Vector6d predicted_velocity = measured_twist;
+  const int sample_count = horizon_ + 1;
+  if (static_cast<int>(reference_poses.size()) != sample_count ||
+      static_cast<int>(reference_twists.size()) != sample_count) {
+    return false;
+  }
   for (int k = 0; k < horizon_; ++k) {
+    predicted_error += poseError(reference_poses[static_cast<std::size_t>(k)],
+                                 reference_poses[static_cast<std::size_t>(k + 1)]);
     predicted_error -= beta * predicted_velocity;
     predicted_velocity *= alpha;
     error_base.segment<6>(6 * k) = predicted_error;
-    velocity_base.segment<6>(6 * k) = predicted_velocity;
+    velocity_base.segment<6>(6 * k) =
+        predicted_velocity - reference_twists[static_cast<std::size_t>(k + 1)];
   }
 
   // Delta-command reference. D*U - delta_reference gives
@@ -652,16 +734,41 @@ void LmpcPositionNode::update() {
     }
     have_previous_command_ = false;
     previous_command_.setZero();
+    have_reference_ = false;
     RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000,
                          "Desired pose watchdog expired (age=%.3f > %.3f s); stopping Cartesian commands",
                          command_age, command_timeout_);
     return;
   }
 
-  const Vector6d error = poseError(current, desired);
+  if (!have_reference_ || poseChanged(reference_goal_pose_, desired)) {
+    reference_start_pose_ = current;
+    reference_goal_pose_ = desired;
+    reference_start_time_steady_ = steady_now;
+    reference_duration_ = poseReferenceDuration(
+        reference_start_pose_, reference_goal_pose_, max_twist_, max_acceleration_, 1.0 / frequency_);
+    have_reference_ = true;
+  }
+
+  const double reference_elapsed =
+      std::chrono::duration<double>(steady_now - reference_start_time_steady_).count();
+  const double dt = 1.0 / frequency_;
+  std::vector<Eigen::Isometry3d> reference_poses;
+  std::vector<Vector6d> reference_twists;
+  reference_poses.reserve(static_cast<std::size_t>(horizon_ + 1));
+  reference_twists.reserve(static_cast<std::size_t>(horizon_ + 1));
+  for (int k = 0; k <= horizon_; ++k) {
+    const auto sample = evaluatePoseReference(
+        reference_start_pose_, reference_goal_pose_, reference_elapsed + k * dt, reference_duration_);
+    reference_poses.push_back(sample.pose);
+    reference_twists.push_back(sample.twist);
+  }
+
+  const Vector6d error = poseError(current, reference_poses.front());
   const Vector6d measured_twist = J * dq;
   Vector6d command = Vector6d::Zero();
-  if (!solve(error, measured_twist, current.translation(), command)) {
+  if (!solve(error, measured_twist, current.translation(),
+             reference_poses, reference_twists, command)) {
     RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 1000,
                          "LMPC QP solve failed; no twist command published");
     return;

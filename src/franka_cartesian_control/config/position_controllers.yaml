@@ -32,7 +32,8 @@ lmpc_position_controller:
     # desired TCP twist u sent to the downstream QP/IK:
     #   v[k+1] = alpha*v[k] + (1-alpha)*u[k]
     #   alpha = exp(-dt / velocity_tracking_time_constant)
-    # Pose error is integrated from the predicted actual velocity.
+    # Pose error is integrated from predicted actual velocity relative to a
+    # fifth-order minimum-jerk pose reference.
     horizon: 25
     velocity_tracking_time_constant: 0.08
 
